@@ -37,6 +37,18 @@ spec:
           env:
             - name: HTTP_SERVER_HOST
               value: "0.0.0.0"
+            # No Ingress ships with this base, so nothing terminates TLS in
+            # front of the pod and the topology is declared as such. An install
+            # that puts a gateway here switches this to "proxy" and declares
+            # PROXY_TRUSTED_PROXIES with the ranges that gateway calls from —
+            # without them the forwarded headers are ignored, and with them
+            # unset "proxy" refuses to boot.
+            - name: TLS_TERMINATION
+              value: "none"
+            # MUST be replaced: it is what clients reach this deployment at, and
+            # every issuer and redirect is built from it.
+            - name: PUBLIC_URL
+              value: "http://aegis.example.com"
             - name: LOGGING_PRETTY_ENABLED
               value: "false"
             # Long enough for this Service to stop sending traffic here before

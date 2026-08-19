@@ -39,8 +39,8 @@ help: ## Show this help
 ##@ Development
 
 .PHONY: run
-run: ## Run the server from source
-	go run ./cmd/server
+run: ## Run the server from source, under the development profile
+	go run ./cmd/server --dev
 
 .PHONY: build
 build: ## Compile the server binary
@@ -135,9 +135,15 @@ image-multiarch: ## Cross build the production image for every target platform
 	docker buildx build -f docker/Dockerfile.production --platform $(PLATFORMS) --target production \
 		--build-arg GO_VERSION=$(GO_VERSION) --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
 
+# The topology is declared rather than left to the dev profile: this runs the
+# production image, and nothing terminates TLS in front of it here.
 .PHONY: image-run
 image-run: image ## Run the production image locally
-	docker run --rm -p 7500:7500 -e HTTP_SERVER_HOST=0.0.0.0 $(IMAGE):latest
+	docker run --rm -p 7500:7500 \
+		-e HTTP_SERVER_HOST=0.0.0.0 \
+		-e TLS_TERMINATION=none \
+		-e PUBLIC_URL=http://localhost:7500 \
+		$(IMAGE):latest
 
 ##@ Development environment
 
