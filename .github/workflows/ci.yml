@@ -104,9 +104,10 @@ jobs:
     if: github.event_name == 'push'
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      # A repository variable rather than a secret: the address is not one, and
-      # keeping it out of the repository is enough.
-      SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+      # A secret rather than a variable: this repository is public, so its
+      # workflow logs are too, and a secret is masked in them. The address is
+      # not sensitive in itself, but there is no reason to publish it.
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
     steps:
       - uses: actions/checkout@v7
         with:
