@@ -7,4 +7,6 @@ type contextKey int
 // and overwrite one another.
 const (
 	requestIDContextKey contextKey = iota + 1
+	schemeContextKey
+	clientIPContextKey
 )
