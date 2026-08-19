@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# The release itself runs on RELEASE_PLEASE_TOKEN, not on GITHUB_TOKEN, so the
+# default credentials of the job need nothing.
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    steps:
+      # A fine grained token is required rather than the default GITHUB_TOKEN
+      # for two reasons: events produced by GITHUB_TOKEN do not trigger other
+      # workflows, so tagging a release would never start anything downstream;
+      # and it cannot grant the pull request and contents writes this needs.
+      #
+      # Token permissions: Contents read and write, Pull requests read and
+      # write, Issues read and write (labels), Metadata read.
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Report
+        if: steps.release.outputs.release_created == 'true'
+        run: echo "Released ${{ steps.release.outputs.tag_name }}"
