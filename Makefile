@@ -167,6 +167,19 @@ tilt-ci: ## Deploy once, wait until healthy and exit
 tilt-down: ## Remove everything Tilt deployed
 	tilt down
 
+# Scoped to this project's images on purpose. A blanket `docker image prune`
+# or `builder prune` would also drop layers and caches belonging to everything
+# else on the machine.
+.PHONY: tilt-clean
+tilt-clean: ## Drop images left behind by previous Tilt sessions
+	@images=$$(docker images --filter 'reference=$(IMAGE):tilt-*' -q | sort -u); \
+	if [ -z "$$images" ]; then \
+		echo "no leftover images"; \
+	else \
+		echo "$$images" | xargs docker rmi -f >/dev/null 2>&1 || true; \
+		echo "removed $$(echo "$$images" | wc -l | tr -d ' ') image(s)"; \
+	fi
+
 .PHONY: k8s-manifests
 k8s-manifests: ## Render the production manifests
 	kubectl kustomize deploy/k8s/base

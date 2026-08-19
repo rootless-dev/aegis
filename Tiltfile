@@ -6,6 +6,19 @@
 
 load('ext://restart_process', 'docker_build_with_restart')
 
+# Tilt prunes on its own, but the defaults rarely fire in a normal session: it
+# runs hourly and only removes images older than six hours, so a couple of hours
+# of work leaves everything behind. Pruning every few builds instead keeps the
+# disk in check while the session is running.
+#
+# It only ever touches images from the current run — anything left by an earlier
+# session is out of its reach, which is what `make tilt-clean` is for.
+docker_prune_settings(
+    num_builds=5,
+    max_age_mins=60,
+    keep_recent=2,
+)
+
 # Only local clusters. A typo in the kube context should not deploy a
 # development build somewhere real.
 allow_k8s_contexts([])

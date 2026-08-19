@@ -39,6 +39,27 @@ Tilt deploys `deploy/k8s/overlays/dev`, which relaxes exactly two things from
 the hardened base: the read-only root filesystem, which would block the sync
 from writing the binary, and the replica count. Neither should ever be promoted.
 
+### Leftover images
+
+Tilt tags every build it produces and prunes them on its own, but the defaults
+rarely fire in a normal session: the pruner runs hourly and only removes images
+older than six hours, so a couple of hours of work leaves everything behind, and
+`tilt ci` exits long before any of that happens.
+
+The Tiltfile therefore prunes every few builds instead. What no setting covers
+is images left by *earlier* sessions — the pruner only ever touches the current
+run:
+
+```sh
+make tilt-clean
+```
+
+It removes only this project's `tilt-*` images. A blanket `docker image prune`
+would also drop layers belonging to everything else on the machine.
+
+Note that `live_update` is what keeps this small in the first place: a code
+change syncs a binary instead of building an image, so builds are rare.
+
 ## Tests
 
 ```sh
