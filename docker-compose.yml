@@ -1,0 +1,35 @@
+name: aegis
+
+services:
+  # Development server: source is mounted and compiled inside the container by
+  # air, with delve listening for a debugger.
+  aegis:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.development
+    volumes:
+      - .:/src
+      # Named volumes keep the module and build caches across restarts, which is
+      # the difference between a two second and a forty second reload.
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    ports:
+      - "7500:7500"
+      - "2345:2345"
+    environment:
+      HTTP_SERVER_HOST: 0.0.0.0
+      LOGGING_LEVEL: debug
+      LOGGING_PRETTY_ENABLED: "true"
+      # No load balancer here, so there is nothing to wait for on shutdown.
+      HEALTH_DRAIN_DELAY: "1s"
+    # delve traces the process it debugs, which the default seccomp and apparmor
+    # profiles block.
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor=unconfined
+      - seccomp=unconfined
+
+volumes:
+  go-mod-cache:
+  go-build-cache:

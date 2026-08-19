@@ -1,0 +1,26 @@
+# The build context stays lean, with two deliberate exceptions below.
+
+.idea/
+.vscode/
+.DS_Store
+
+# Never ship local secrets into an image.
+.env
+.env.*
+!.env.example
+
+*.test
+*.out
+coverage.*
+tmp/
+
+docs/
+README.md
+
+# .git is NOT ignored on purpose: the toolchain reads it to stamp the revision
+# and the build time into the binary. Excluding it makes that information
+# disappear with no warning.
+
+# bin/ is ignored except for the binary the tilt stage expects.
+bin/*
+!bin/aegisd

@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+#
+# Image for the Tilt loop. The binary is compiled on the host and synced into a
+# running container by live_update, so nothing is built here and no toolchain
+# is needed.
+#
+# Alpine rather than distroless: the live_update restart wrapper needs a shell.
+
+ARG ALPINE_VERSION=3.24
+
+# Matches the nonroot user of the distroless production image, which is what
+# the deployment security context requires.
+ARG RUN_UID=65532
+
+FROM alpine:${ALPINE_VERSION} AS tilt
+
+ARG RUN_UID
+
+# The directory has to belong to the runtime user: live_update writes the
+# rebuilt binary into it, and a root owned directory fails with a permission
+# error that surfaces as an unrelated timeout.
+RUN mkdir -p /app && chown -R ${RUN_UID}:${RUN_UID} /app
+
+WORKDIR /app
+
+COPY --chown=${RUN_UID}:${RUN_UID} bin/aegisd /app/aegisd
+
+USER ${RUN_UID}:${RUN_UID}
+
+EXPOSE 7500
+ENTRYPOINT ["/app/aegisd"]

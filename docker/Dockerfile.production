@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1
+#
+# Production image, and the debug variant of the very same binary.
+# Build from the repository root: docker build -f docker/Dockerfile.production .
+#
+# GO_VERSION is injected by the Makefile so the toolchain is declared in a
+# single place across every Dockerfile here.
+
+ARG GO_VERSION=1.26
+
+# Pinned to BUILDPLATFORM so the compiler runs natively. Without it buildx
+# emulates it under QEMU for each target architecture, which is about an order
+# of magnitude slower. Go cross compiles on its own.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
+
+WORKDIR /src
+
+# git is read at build time: the toolchain stamps the revision and build time
+# into the binary from the repository, with no linker flags involved.
+RUN apk add --no-cache git
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+ARG TARGETOS
+ARG TARGETARCH
+# Only the semantic version needs injecting; revision and time come for free.
+ARG VERSION=devel
+
+COPY . .
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -X github.com/rootless-dev/aegis/internal/buildinfo.version=${VERSION}" \
+      -o /out/aegisd ./cmd/server
+
+# What every environment runs: no shell, no package manager, non-root.
+FROM gcr.io/distroless/static-debian12:nonroot AS production
+
+COPY --from=builder /out/aegisd /aegisd
+
+EXPOSE 7500
+USER nonroot:nonroot
+ENTRYPOINT ["/aegisd"]
+
+# The same binary from the same builder, on an image carrying a busybox, for
+# the day something has to be inspected in place. Nothing is recompiled, so
+# what runs here is what runs in production.
+FROM gcr.io/distroless/static-debian12:debug-nonroot AS debug
+
+COPY --from=builder /out/aegisd /aegisd
+
+EXPOSE 7500
+USER nonroot:nonroot
+ENTRYPOINT ["/aegisd"]

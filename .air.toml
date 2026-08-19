@@ -1,0 +1,24 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  # -N disables optimisation and -l disables inlining: without both, delve puts
+  # breakpoints on lines other than the ones you set.
+  cmd = "go build -gcflags='all=-N -l' -o ./tmp/aegisd ./cmd/server"
+  bin = "./tmp/aegisd"
+  # --continue starts the process without waiting for a debugger to attach, so
+  # the service is usable even when nobody is debugging.
+  full_bin = "dlv exec ./tmp/aegisd --headless --listen=:2345 --api-version=2 --accept-multiclient --continue --"
+  include_ext = ["go", "toml", "env"]
+  exclude_dir = ["tmp", "bin", "docs", ".git", ".github"]
+  exclude_regex = ["_test\\.go"]
+  delay = 300
+  stop_on_error = true
+  send_interrupt = true
+  kill_delay = 2000
+
+[log]
+  time = false
+
+[misc]
+  clean_on_exit = true

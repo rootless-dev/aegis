@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+#
+# Development image used by docker compose: the source is mounted and compiled
+# inside the container by air, with delve listening for a debugger.
+#
+# Runs as root on purpose. Air rewrites the binary in place and delve needs to
+# trace the process; this image never leaves a developer machine.
+
+ARG GO_VERSION=1.26
+ARG AIR_VERSION=v1.67.4
+ARG DELVE_VERSION=v1.27.1
+
+FROM golang:${GO_VERSION}-alpine AS development
+
+WORKDIR /src
+
+RUN apk add --no-cache git
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+ARG AIR_VERSION
+ARG DELVE_VERSION
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go install github.com/air-verse/air@${AIR_VERSION} && \
+    go install github.com/go-delve/delve/cmd/dlv@${DELVE_VERSION}
+
+# 7500 serves, 2345 is the delve listener.
+EXPOSE 7500 2345
+
+CMD ["air", "-c", ".air.toml"]
