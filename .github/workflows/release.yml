@@ -31,6 +31,9 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Stated explicitly because release-please otherwise targets the
+          # default branch, which is develop. Releases are cut from main.
+          target-branch: main
 
       - name: Report
         if: steps.release.outputs.release_created == 'true'
