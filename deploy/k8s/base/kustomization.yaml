@@ -9,3 +9,10 @@ resources:
   - namespace.yaml
   - deployment.yaml
   - service.yaml
+
+# The tag lives here rather than in the deployment, so releasing means editing
+# one line. An untagged image resolves to latest, which is not reproducible: two
+# rollouts of the same manifest can land on different builds.
+images:
+  - name: aegis
+    newTag: 0.0.1
