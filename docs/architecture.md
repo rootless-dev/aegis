@@ -24,6 +24,13 @@ Only `internal/application` knows about everything, because wiring is its job.
 It is the composition root: it translates `configs` into each package's options,
 decides the middleware chain, and lists the resources in startup order.
 
+The interfaces it depends on are declared there too, in `ports.go` and
+`resources.go`, never in the packages that satisfy them. `CertificateSource` is
+the current one: `internal/infra/certs` does not know it exists, which is what
+leaves room for a KMS or an ACME client to answer handshakes later without
+either side being rewritten. Anything reaching the outside world is expected to
+arrive the same way.
+
 The router is a chi instance, and it exists only inside `internal/application`.
 Handlers are `http.Handler` throughout, so no package outside the assembly knows
 which router is in use.

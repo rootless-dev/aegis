@@ -44,6 +44,27 @@ enforces: a pod that does not satisfy it is refused rather than started.
 Everything in that namespace is subject to it, including anything added later —
 an init container or a migration job will need the same four settings.
 
+### TLS and the topology
+
+The base ships no Ingress, so nothing terminates TLS in front of the pod and it
+declares `TLS_TERMINATION=none`. Adding a gateway means switching that to
+`proxy` and declaring `PROXY_TRUSTED_PROXIES` with the ranges it calls from:
+without them the forwarded headers are ignored, and `proxy` refuses to boot with
+the list empty. `PUBLIC_URL` has to be replaced either way — it is what clients
+reach the deployment at, and every issuer and redirect is built from it.
+
+The dev overlay runs the development profile, which serves TLS from a
+certificate generated in memory at every boot. The probes there are patched to
+`scheme: HTTPS`, all three of them: the listener no longer speaks plain HTTP.
+The kubelet does not verify the certificate a probe is offered, which is what
+makes a self-signed one workable. That overlay pins one replica, so the two pods
+answering with different generated certificates is not a situation that arises.
+
+Where the certificate comes from a Secret mounted by cert-manager or similar,
+point `TLS_CERT_FILE` and `TLS_KEY_FILE` at the mounted files and leave
+`TLS_RELOAD_INTERVAL` alone: the files are rewritten in place on renewal and are
+picked up without restarting the pod.
+
 ### Timings that have to stay in step
 
 ```

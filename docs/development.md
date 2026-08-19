@@ -5,9 +5,18 @@ Run `make` for every target, grouped by area.
 ## Running
 
 ```sh
-make run   # from source
+make run   # from source, development profile
 make ci    # everything the pipeline runs
 ```
+
+`make run` passes `--dev`, so the service serves TLS from a certificate it
+generates in memory at every boot: reach it at `https://localhost:7500` and tell
+the client to skip verification (`curl -k`). Nothing is written to disk, and a
+new pair is minted on the next start — which is why the browser asks for the
+security exception again after every restart.
+
+Running the binary without `--dev` is running it as production, and production
+refuses to boot until `tls.termination` and `public_url` are declared.
 
 ## Hot reload and debugger
 
@@ -15,8 +24,9 @@ make ci    # everything the pipeline runs
 make dev
 ```
 
-Brings up the compose stack, which describes the runtime environment of the
-service and nothing else: the source is mounted and rebuilt by air on every
+The compose stack runs the development profile too, so the service there also
+answers over HTTPS on `7500`. It brings up an environment describing the runtime
+of the service and nothing else: the source is mounted and rebuilt by air on every
 change, with delve listening on `2345`. The container runs as root and carries
 `SYS_PTRACE`, because air rewrites the binary in place and delve has to trace
 the process. That image never leaves a developer machine.
@@ -38,6 +48,11 @@ into the cluster.
 Tilt deploys `deploy/k8s/overlays/dev`, which relaxes exactly two things from
 the hardened base: the read-only root filesystem, which would block the sync
 from writing the binary, and the replica count. Neither should ever be promoted.
+
+It also selects the development profile, which means the pod serves TLS from a
+generated certificate, so all three probes are patched to `scheme: HTTPS` and
+the forwarded port speaks HTTPS. The kubelet does not verify the certificate a
+probe is offered, which is what makes a self-signed one workable there.
 
 ### Leftover images
 
