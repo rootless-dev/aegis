@@ -7,6 +7,12 @@ type Banner struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+func defaultBanner() *Banner {
+	return &Banner{
+		Enabled: true,
+	}
+}
+
 func (cfg *Banner) Validate() error {
 	return nil
 }

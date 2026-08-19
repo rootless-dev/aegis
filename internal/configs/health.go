@@ -16,6 +16,13 @@ type Health struct {
 	DrainDelay time.Duration `yaml:"drain_delay"`
 }
 
+func defaultHealth() *Health {
+	return &Health{
+		CheckTimeout: 2 * time.Second,
+		DrainDelay:   5 * time.Second,
+	}
+}
+
 func (cfg *Health) Validate() error {
 	var errs []error
 
