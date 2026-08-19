@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aegis
+  labels:
+    app.kubernetes.io/name: aegis
+    # Pod Security Admission at its strictest. The workload already satisfies
+    # it — non root, no privilege escalation, all capabilities dropped, default
+    # seccomp — so this turns those settings into something the cluster
+    # enforces instead of something the manifest happens to declare.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

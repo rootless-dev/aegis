@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis
+  labels:
+    app.kubernetes.io/name: aegis
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aegis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aegis
+    spec:
+      # Has to exceed GRACEFUL_SHUTDOWN_TIMEOUT, otherwise SIGKILL lands in the
+      # middle of the shutdown and in flight requests are cut.
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: aegis
+          image: aegis
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 7500
+
+          env:
+            - name: HTTP_SERVER_HOST
+              value: "0.0.0.0"
+            - name: LOGGING_PRETTY_ENABLED
+              value: "false"
+            # Long enough for this Service to stop sending traffic here before
+            # the server stops accepting connections.
+            - name: HEALTH_DRAIN_DELAY
+              value: "5s"
+
+          # Liveness checks nothing external on purpose: a slow dependency
+          # would otherwise fail every replica and have them all restarted.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+
+          # Covers a slow start without making the liveness threshold generous
+          # for the whole life of the pod.
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

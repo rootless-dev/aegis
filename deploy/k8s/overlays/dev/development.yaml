@@ -1,0 +1,23 @@
+# Development only. The base hardening is what production runs; the two changes
+# here exist so the inner loop works, and neither should ever be promoted.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis
+spec:
+  # One replica: live_update would otherwise sync the binary into every pod for
+  # no benefit.
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: aegis
+          # Tilt copies the rebuilt binary into the running container, which a
+          # read only root filesystem forbids.
+          securityContext:
+            readOnlyRootFilesystem: false
+          env:
+            - name: LOGGING_LEVEL
+              value: debug
+            - name: HEALTH_DRAIN_DELAY
+              value: "1s"

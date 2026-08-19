@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis
+  labels:
+    app.kubernetes.io/name: aegis
+spec:
+  selector:
+    app.kubernetes.io/name: aegis
+  ports:
+    - name: http
+      port: 7500
+      targetPort: http

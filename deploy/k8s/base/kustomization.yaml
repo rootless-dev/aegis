@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Applied to every resource below, so no manifest has to repeat it and nothing
+# can be deployed to the wrong place by omission.
+namespace: aegis
+
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
