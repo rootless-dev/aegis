@@ -1,0 +1,182 @@
+package health_test
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/phuslu/log"
+	"github.com/rootless-dev/aegis/internal/infra/health"
+)
+
+func newHealth(checkTimeout, drainDelay time.Duration) *health.Health {
+	return health.New(health.Options{
+		Logger:       &log.Logger{Writer: log.IOWriter{Writer: io.Discard}},
+		CheckTimeout: checkTimeout,
+		DrainDelay:   drainDelay,
+	})
+}
+
+func call(t *testing.T, handler http.HandlerFunc) *httptest.ResponseRecorder {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	handler(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	return recorder
+}
+
+func TestLivenessIgnoresFailingDependencies(t *testing.T) {
+	instance := newHealth(time.Second, 0)
+	instance.Register("database", func(context.Context) error {
+		return errors.New("connection refused")
+	})
+
+	recorder := call(t, instance.Live())
+
+	// A failing liveness gets the container restarted, which would never fix a
+	// database outage and would take every replica down at once.
+	if recorder.Code != http.StatusOK {
+		t.Errorf("liveness must not depend on checks, got %d", recorder.Code)
+	}
+}
+
+func TestReadinessFailsWhenACheckFails(t *testing.T) {
+	instance := newHealth(time.Second, 0)
+	instance.Register("healthy", func(context.Context) error { return nil })
+	instance.Register("database", func(context.Context) error {
+		return errors.New("connection refused")
+	})
+
+	recorder := call(t, instance.Ready())
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 503, got %d", recorder.Code)
+	}
+}
+
+func TestPublicReadinessHidesTheDetails(t *testing.T) {
+	instance := newHealth(time.Second, 0)
+	instance.Register("database", func(context.Context) error {
+		return errors.New("dial tcp 10.0.3.4:5432: connection refused")
+	})
+
+	body := call(t, instance.Ready()).Body.String()
+
+	// The public endpoint would otherwise hand internal topology to anyone.
+	for _, leaked := range []string{"database", "10.0.3.4", "connection refused"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("public readiness leaked %q: %s", leaked, body)
+		}
+	}
+}
+
+func TestDetailedReadinessNamesTheFailure(t *testing.T) {
+	instance := newHealth(time.Second, 0)
+	instance.Register("database", func(context.Context) error {
+		return errors.New("connection refused")
+	})
+
+	body := call(t, instance.ReadyDetailed()).Body.String()
+
+	for _, want := range []string{"database", "connection refused"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detailed readiness should report %q: %s", want, body)
+		}
+	}
+}
+
+func TestReadinessWithoutChecksIsReady(t *testing.T) {
+	if code := call(t, newHealth(time.Second, 0).Ready()).Code; code != http.StatusOK {
+		t.Errorf("want 200 with no dependencies registered, got %d", code)
+	}
+}
+
+func TestCheckTimeoutIsEnforced(t *testing.T) {
+	instance := newHealth(50*time.Millisecond, 0)
+	instance.Register("slow", func(ctx context.Context) error {
+		select {
+		case <-time.After(2 * time.Second):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+
+	start := time.Now()
+	recorder := call(t, instance.Ready())
+	elapsed := time.Since(start)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Errorf("a check that times out must fail readiness, got %d", recorder.Code)
+	}
+
+	if elapsed > time.Second {
+		t.Errorf("the probe should be bounded by the check timeout, took %s", elapsed)
+	}
+}
+
+func TestChecksRunConcurrently(t *testing.T) {
+	instance := newHealth(time.Second, 0)
+
+	for range 4 {
+		instance.Register("slow", func(context.Context) error {
+			time.Sleep(100 * time.Millisecond)
+
+			return nil
+		})
+	}
+
+	start := time.Now()
+	call(t, instance.Ready())
+
+	// Sequentially this would take 400ms.
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Errorf("checks should run concurrently, took %s", elapsed)
+	}
+}
+
+func TestDrainFailsReadinessBeforeShutdown(t *testing.T) {
+	instance := newHealth(time.Second, 20*time.Millisecond)
+
+	if code := call(t, instance.Ready()).Code; code != http.StatusOK {
+		t.Fatalf("want a ready instance before draining, got %d", code)
+	}
+
+	if err := instance.BeginDrain(context.Background()); err != nil {
+		t.Fatalf("drain failed: %v", err)
+	}
+
+	if code := call(t, instance.Ready()).Code; code != http.StatusServiceUnavailable {
+		t.Errorf("readiness must fail while draining, got %d", code)
+	}
+
+	// Liveness stays up: the process is healthy, it is just leaving rotation.
+	if code := call(t, instance.Live()).Code; code != http.StatusOK {
+		t.Errorf("liveness must stay up while draining, got %d", code)
+	}
+}
+
+func TestDrainStopsWhenTheBudgetRunsOut(t *testing.T) {
+	instance := newHealth(time.Second, 5*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+
+	// An interrupted drain is not a resource failure and must not be reported
+	// as one.
+	if err := instance.BeginDrain(ctx); err != nil {
+		t.Errorf("a cut short drain should not fail the shutdown, got %v", err)
+	}
+
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("drain ignored the shutdown budget, took %s", elapsed)
+	}
+}
