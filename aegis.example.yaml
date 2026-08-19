@@ -1,0 +1,51 @@
+# Configuration file for aegis.
+#
+# Searched in order: the path in AEGIS_CONFIG_FILE, then ./aegis.yaml, then
+# /etc/aegis/aegis.yaml. The first file found is used; the others are fallbacks,
+# not layers to merge.
+#
+# Precedence is defaults, then this file, then environment variables. Every key
+# is optional: what is not declared here keeps its default, and an unknown key
+# fails the boot rather than being ignored.
+
+app_name: Aegis
+
+logging:
+  # One of: debug, info, warn, error, fatal, panic.
+  level: INFO
+  caller: 1
+  time_field: ""
+  time_format: "2006-01-02 15:04:05"
+  # Colored console output, applied only when stderr is a terminal.
+  pretty_enabled: true
+
+http_server:
+  host: 0.0.0.0
+  port: "7500"
+  # Bounds header reading; the slowloris defense.
+  read_header_timeout: 5s
+  read_timeout: 15s
+  # Has to accommodate the worst case of the authentication path, argon2id
+  # included.
+  write_timeout: 15s
+  idle_timeout: 60s
+  # Deadline carried on the request context. Must not exceed write_timeout.
+  request_timeout: 10s
+  max_header_bytes: 1048576
+
+graceful:
+  # Whole shutdown budget, shared by every pending. Must fit the window the
+  # orchestrator allows between SIGTERM and SIGKILL.
+  timeout: 20s
+
+health:
+  check_timeout: 2s
+  # How long readiness keeps failing before connections stop being accepted, so
+  # the load balancer takes this instance out of rotation first. Must be shorter
+  # than graceful.timeout.
+  drain_delay: 5s
+
+banner:
+  # Worth turning off where logs are collected and parsed as structured
+  # entries: the startup art is not JSON.
+  enabled: true
