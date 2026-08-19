@@ -1,0 +1,24 @@
+# Local environment. Carries secrets — the master key above all — and must
+# never be committed. Use .env.example to document which variables exist.
+.env
+.env.*
+!.env.example
+
+# Local configuration file. May carry secrets, and is machine specific.
+/aegis.yaml
+!aegis.example.yaml
+
+# Build output
+/bin/
+/dist/
+aegisd
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.*
+
+# Editors
+.idea/
+.vscode/
+.DS_Store
