@@ -144,22 +144,29 @@ jobs:
 
       # A failed gate stops the build with a status and a link, which is not much
       # to go on when the log is all somebody has. This spells out the
-      # conditions that failed, with the value and the threshold it missed, in
-      # the log and in the run summary.
+      # conditions that failed and the issues behind them — file, line and rule
+      # — in the log and in the run summary, so the reason travels with the
+      # build instead of living on a server somebody has to go open.
       - name: Explain the quality gate
         if: failure()
         run: |
           key=$(awk -F= '/^sonar.projectKey=/{print $2}' sonar-project.properties)
 
-          if ! body=$(curl -sSf -u "$SONAR_TOKEN:" \
+          if ! gate=$(curl -sSf -u "$SONAR_TOKEN:" \
             "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$key"); then
             echo "The quality gate could not be read back; see the analysis on the server."
             exit 0
           fi
 
-          # The body travels in the environment: the heredoc already owns stdin,
-          # so a pipe into python would be swallowed by the script itself.
-          GATE="$body" python3 - "$key" <<'PYTHON' | tee -a "$GITHUB_STEP_SUMMARY"
+          # Issues are fetched separately: the gate reports how many conditions
+          # failed, never which code failed them.
+          issues=$(curl -sSf -u "$SONAR_TOKEN:" \
+            "$SONAR_HOST_URL/api/issues/search?componentKeys=$key&resolved=false&inNewCodePeriod=true&ps=25" \
+            || echo '{}')
+
+          # Both bodies travel in the environment: the heredoc already owns
+          # stdin, so a pipe into python would be swallowed by the script itself.
+          GATE="$gate" ISSUES="$issues" python3 - "$key" <<'PYTHON' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
           import os
           import sys
@@ -184,6 +191,24 @@ jobs:
               print(
                   f"- `{condition.get('metricKey')}`: {condition.get('actualValue')} "
                   f"(fails when {comparator} {condition.get('errorThreshold')})"
+              )
+
+          issues = json.loads(os.environ.get("ISSUES") or "{}").get("issues", [])
+
+          if issues:
+              print()
+              print("### Issues in new code")
+              print()
+
+          for issue in issues:
+              # The component is prefixed with the project key, which says
+              # nothing the reader does not already know.
+              where = issue.get("component", "").split(":", 1)[-1]
+              line = issue.get("line")
+              print(
+                  f"- `{where}{f':{line}' if line else ''}` "
+                  f"[{issue.get('severity', '?')}] {issue.get('message', '')} "
+                  f"({issue.get('rule', '')})"
               )
           PYTHON
 
