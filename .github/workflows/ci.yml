@@ -1,11 +1,17 @@
 name: CI
 
+# On pushes, every branch. Pull requests are deliberately not a trigger: a pull
+# request from this repository carries commits that were already pushed, and the
+# checks are attached to the commit, so they show up on the pull request page
+# either way. Adding the event would only run the whole pipeline twice on the
+# same code — and leave one of the two runs reporting a job it did not need to
+# do.
+#
+# A pull request from a fork has no push here and would not be covered. When
+# that day comes, the event comes back with the jobs restricted to forks, which
+# still does not duplicate anything.
 on:
-  # Every branch, not just the integration ones: an analysis that only runs
-  # after the merge reports problems at the one moment nothing can be done
-  # about them.
   push:
-  pull_request:
 
 # Least privilege by default. Any job needing more raises it for itself.
 permissions:
@@ -101,17 +107,15 @@ jobs:
     name: Security (SonarQube)
     runs-on: ubuntu-latest
     needs: test
-    # On pushes only. A pull request from this repository is a commit that was
-    # already pushed, and analysing it again would just spend a second run on
-    # the same code.
+    # No condition: the analysis is part of the pipeline, not something that
+    # applies to some events and not others.
     #
-    # Community Edition has no branch model: every analysis lands on the same
-    # project, so the dashboard shows whichever branch was scanned last. That is
-    # the price of catching problems while the branch is still open, and the
-    # merge into develop restores the picture. Branch and pull request analysis
-    # are Developer Edition features; SonarQube Cloud offers them free for public
+    # Community Edition has no branch model, so every analysis lands on the same
+    # project and the dashboard shows whichever branch ran last. That is the
+    # price of catching problems while the branch is still open, and the merge
+    # into develop restores the picture. Branch and pull request analysis are
+    # Developer Edition features; SonarQube Cloud offers them free for public
     # repositories.
-    if: github.event_name == 'push'
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       # A secret rather than a variable: this repository is public, so its
