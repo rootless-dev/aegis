@@ -136,6 +136,56 @@ jobs:
       - name: Scan
         if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
         uses: SonarSource/sonarqube-scan-action@v8
+        with:
+          # Without waiting, the scanner uploads the analysis and leaves, so the
+          # job passes while the server is still deciding — and a failed gate
+          # reaches nobody. Waiting makes the verdict part of the build.
+          args: -Dsonar.qualitygate.wait=true
+
+      # A failed gate stops the build with a status and a link, which is not much
+      # to go on when the log is all somebody has. This spells out the
+      # conditions that failed, with the value and the threshold it missed, in
+      # the log and in the run summary.
+      - name: Explain the quality gate
+        if: failure()
+        run: |
+          key=$(awk -F= '/^sonar.projectKey=/{print $2}' sonar-project.properties)
+
+          if ! body=$(curl -sSf -u "$SONAR_TOKEN:" \
+            "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$key"); then
+            echo "The quality gate could not be read back; see the analysis on the server."
+            exit 0
+          fi
+
+          # The body travels in the environment: the heredoc already owns stdin,
+          # so a pipe into python would be swallowed by the script itself.
+          GATE="$body" python3 - "$key" <<'PYTHON' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          import sys
+
+          project = sys.argv[1]
+          status = json.loads(os.environ["GATE"]).get("projectStatus", {})
+
+          print(f"## Quality gate: {status.get('status', 'unknown')}")
+          print()
+          print(f"Project `{project}`.")
+          print()
+
+          failed = [c for c in status.get("conditions", []) if c.get("status") == "ERROR"]
+
+          if not failed:
+              print("No condition is reported as failing, so the build stopped for another reason.")
+
+          for condition in failed:
+              comparator = {"LT": "<", "GT": ">", "EQ": "=", "NE": "!="}.get(
+                  condition.get("comparator", ""), condition.get("comparator", "")
+              )
+              print(
+                  f"- `{condition.get('metricKey')}`: {condition.get('actualValue')} "
+                  f"(fails when {comparator} {condition.get('errorThreshold')})"
+              )
+          PYTHON
 
       - name: Skipped
         if: env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == ''
