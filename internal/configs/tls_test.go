@@ -114,24 +114,32 @@ func TestTerminationMatrix(t *testing.T) {
 			cfg := production(t)
 			tc.arrange(cfg)
 
-			err := cfg.Validate()
-
-			if tc.wants == "" {
-				if err != nil {
-					t.Fatalf("want a valid configuration, got %v", err)
-				}
-
-				return
-			}
-
-			if err == nil {
-				t.Fatalf("want an error mentioning %q, got none", tc.wants)
-			}
-
-			if !strings.Contains(err.Error(), tc.wants) {
-				t.Errorf("want an error mentioning %q, got %v", tc.wants, err)
-			}
+			requireValidation(t, cfg.Validate(), tc.wants)
 		})
+	}
+}
+
+// requireValidation asserts the outcome of a validation: an empty want means
+// the configuration has to be accepted, anything else has to be reported and
+// named. It lives here for both files of this package, which otherwise repeat
+// the same four branches around every table.
+func requireValidation(t *testing.T, err error, wants string) {
+	t.Helper()
+
+	if wants == "" {
+		if err != nil {
+			t.Fatalf("want a valid configuration, got %v", err)
+		}
+
+		return
+	}
+
+	if err == nil {
+		t.Fatalf("want an error mentioning %q, got none", wants)
+	}
+
+	if !strings.Contains(err.Error(), wants) {
+		t.Errorf("want an error mentioning %q, got %v", wants, err)
 	}
 }
 

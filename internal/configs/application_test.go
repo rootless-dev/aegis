@@ -1,7 +1,6 @@
 package configs_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/rootless-dev/aegis/internal/configs"
@@ -69,34 +68,29 @@ func TestPublicURLValidation(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			cfg := configs.Default()
-			cfg.PublicURL = tc.url
-			cfg.TLS.Termination = tc.termination
-
-			if tc.termination == configs.TerminationApp {
-				cfg.TLS.CertFile = "/etc/aegis/tls.crt"
-				cfg.TLS.KeyFile = "/etc/aegis/tls.key"
-			}
-
-			if tc.termination == configs.TerminationProxy {
-				cfg.Proxy.TrustedProxies = []string{"10.0.0.0/8"}
-			}
-
-			err := cfg.Validate()
-
-			if tc.wants == "" {
-				if err != nil {
-					t.Fatalf("want a valid configuration, got %v", err)
-				}
-
-				return
-			}
-
-			if err == nil || !strings.Contains(err.Error(), tc.wants) {
-				t.Errorf("want an error mentioning %q, got %v", tc.wants, err)
-			}
+			requireValidation(t, publicURLConfig(tc.url, tc.termination).Validate(), tc.wants)
 		})
 	}
+}
+
+// publicURLConfig builds a configuration whose only interesting part is the
+// public url and the topology it has to agree with. The rest is whatever makes
+// that topology valid, so a failure points at the rule under test.
+func publicURLConfig(url string, termination configs.Termination) *configs.Application {
+	cfg := configs.Default()
+	cfg.PublicURL = url
+	cfg.TLS.Termination = termination
+
+	switch termination {
+	case configs.TerminationApp:
+		cfg.TLS.CertFile = "/etc/aegis/tls.crt"
+		cfg.TLS.KeyFile = "/etc/aegis/tls.key"
+	case configs.TerminationProxy:
+		cfg.Proxy.TrustedProxies = []string{"10.0.0.0/8"}
+	case configs.TerminationNone:
+	}
+
+	return cfg
 }
 
 func TestNormalizeOnlyHelpsDevelopment(t *testing.T) {

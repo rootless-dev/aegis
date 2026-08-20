@@ -12,6 +12,32 @@ import (
 	"github.com/rootless-dev/aegis/internal/infra/configbuilder"
 )
 
+// settingPrefixes covers every variable the builder reads.
+var settingPrefixes = []string{
+	"AEGIS_", "APP_", "PUBLIC_URL", "LOGGING_", "HTTP_SERVER_",
+	"TLS_", "PROXY_", "HSTS_", "GRACEFUL_", "HEALTH_", "BANNER_",
+}
+
+// TestMain runs these tests against an empty environment. The builder reads the
+// real one, so a developer shell carrying the project .env — which is how the
+// service is run locally — would otherwise decide what the tests see, and they
+// would fail on that machine alone.
+func TestMain(m *testing.M) {
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+
+		for _, prefix := range settingPrefixes {
+			if strings.HasPrefix(key, prefix) {
+				os.Unsetenv(key)
+
+				break
+			}
+		}
+	}
+
+	os.Exit(m.Run())
+}
+
 // writeConfig puts a configuration file on disk and points the builder at it.
 func writeConfig(t *testing.T, content string) {
 	t.Helper()
