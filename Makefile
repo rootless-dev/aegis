@@ -72,9 +72,12 @@ vet: ## Run go vet, including the integration tagged files
 	go vet ./...
 	go vet -tags=integration ./test/...
 
+# -coverpkg spans every package: without it a package is only credited for what
+# its own tests execute, so code used across a boundary — the response writers,
+# reached through the middleware — reads as untouched.
 .PHONY: test
 test: ## Run the unit tests with the race detector
-	go test -race -covermode=atomic -coverprofile=$(COVERAGE) ./...
+	go test -race -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE) ./...
 
 .PHONY: test-integration
 test-integration: ## Run the integration tests against the compiled binary
