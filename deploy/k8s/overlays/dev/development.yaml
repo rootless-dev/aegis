@@ -29,6 +29,11 @@ spec:
               value: dev
             - name: TLS_TERMINATION
               value: "app"
+            # Cleared: the base declares the ranges of the gateway it assumes,
+            # and trusted proxies with no gateway in front is a contradiction
+            # the boot refuses. An empty value counts as absent.
+            - name: PROXY_TRUSTED_PROXIES
+              value: ""
             - name: PUBLIC_URL
               value: "https://localhost:7500"
 
