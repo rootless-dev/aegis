@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"time"
@@ -13,6 +14,10 @@ type Options struct {
 	Address string
 	Handler http.Handler
 	Logger  *log.Logger
+
+	// TLSConfig turns the listener into an HTTPS one. Nil means plain HTTP,
+	// which is only ever the case when something in front terminates TLS.
+	TLSConfig *tls.Config
 
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
@@ -32,6 +37,7 @@ func New(opts Options) *Server {
 		server: &http.Server{
 			Addr:              opts.Address,
 			Handler:           opts.Handler,
+			TLSConfig:         opts.TLSConfig,
 			ReadHeaderTimeout: opts.ReadHeaderTimeout,
 			ReadTimeout:       opts.ReadTimeout,
 			WriteTimeout:      opts.WriteTimeout,
@@ -52,9 +58,12 @@ func (s *Server) Start() <-chan error {
 	go func() {
 		defer close(failure)
 
-		s.logger.Info().Str("address", s.server.Addr).Msg("http server listening")
+		s.logger.Info().
+			Str("address", s.server.Addr).
+			Str("scheme", s.scheme()).
+			Msg("http server listening")
 
-		if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := s.listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			failure <- err
 		}
 	}()
@@ -72,4 +81,23 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// listen takes no file names: the certificate comes from the TLS configuration,
+// which resolves it per handshake and can therefore be rotated under a running
+// server.
+func (s *Server) listen() error {
+	if s.server.TLSConfig == nil {
+		return s.server.ListenAndServe()
+	}
+
+	return s.server.ListenAndServeTLS("", "")
+}
+
+func (s *Server) scheme() string {
+	if s.server.TLSConfig == nil {
+		return "http"
+	}
+
+	return "https"
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/phuslu/log"
 	"github.com/rootless-dev/aegis/internal/application"
@@ -23,12 +24,15 @@ func main() {
 
 func run() error {
 	// Layered on purpose, each one overwriting only what it declares: defaults
-	// are the base, the file is what ships with the image, and the environment
-	// is how a single instance is adjusted without rebuilding anything.
+	// are the base, the file is what ships with the image, the environment is
+	// how a single instance is adjusted without rebuilding anything, and the
+	// command line is whoever is looking at the process right now.
 	cfg, err := configbuilder.New().
 		WithDefaults().
 		WithYAML().
 		WithEnv().
+		WithFlags(os.Args[1:]).
+		Normalize().
 		Validate().
 		Build()
 	if err != nil {

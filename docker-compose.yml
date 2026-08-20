@@ -17,6 +17,10 @@ services:
       - "7500:7500"
       - "2345:2345"
     environment:
+      # Development profile: TLS is served from a certificate generated in
+      # memory at every boot, so the loop exercises the same path production
+      # takes and the service answers on https://localhost:7500.
+      AEGIS_PROFILE: dev
       HTTP_SERVER_HOST: 0.0.0.0
       LOGGING_LEVEL: debug
       LOGGING_PRETTY_ENABLED: "true"

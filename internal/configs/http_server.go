@@ -27,6 +27,21 @@ type HttpServer struct {
 	MaxHeaderBytes int `yaml:"max_header_bytes"`
 }
 
+func defaultHttpServer() *HttpServer {
+	return &HttpServer{
+		Host:              "0.0.0.0",
+		Port:              "7500",
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		// Has to accommodate the worst case of the authentication path, argon2id
+		// included.
+		WriteTimeout:   15 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		RequestTimeout: 10 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+}
+
 func (cfg *HttpServer) Validate() error {
 	var errs []error
 

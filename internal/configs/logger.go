@@ -17,6 +17,15 @@ type Logging struct {
 	PrettyEnabled bool   `yaml:"pretty_enabled"`
 }
 
+func defaultLogging() *Logging {
+	return &Logging{
+		Level:         "INFO",
+		Caller:        1,
+		TimeFormat:    "2006-01-02 15:04:05",
+		PrettyEnabled: true,
+	}
+}
+
 func (cfg *Logging) Validate() error {
 	var errs []error
 

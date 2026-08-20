@@ -18,9 +18,15 @@ type namedResource struct {
 // things are taken down — which is why it lives in one readable place instead
 // of spread across the wiring.
 func (app *Application) resources() []namedResource {
-	return []namedResource{
-		{name: "http server", resource: app.httpServer},
+	var list []namedResource
+
+	// Ahead of the server, so the reload loop is only stopped once nothing is
+	// left to answer a handshake.
+	if app.certificateReloader != nil {
+		list = append(list, namedResource{name: "certificate reload", resource: app.certificateReloader})
 	}
+
+	return append(list, namedResource{name: "http server", resource: app.httpServer})
 }
 
 func (app *Application) registerResource(entry namedResource) {

@@ -18,13 +18,18 @@ func newTestApplication(t *testing.T, logs *bytes.Buffer) *Application {
 
 	app := &Application{
 		cfg: &configs.Application{
-			AppName: "aegis-test",
+			AppName:   "aegis-test",
+			Profile:   configs.ProfileProd,
+			PublicURL: "https://aegis.test",
 			HttpServer: &configs.HttpServer{
 				Port: "7500", Host: "127.0.0.1",
 				RequestTimeout: 10 * time.Second,
 			},
 			Graceful: &configs.Graceful{Timeout: 20 * time.Second},
 			Health:   &configs.Health{CheckTimeout: time.Second, DrainDelay: time.Second},
+			TLS:      &configs.TLS{Termination: configs.TerminationNone},
+			Proxy:    &configs.Proxy{},
+			HSTS:     &configs.HSTS{},
 		},
 		logger: &log.Logger{Writer: log.IOWriter{Writer: logs}},
 	}

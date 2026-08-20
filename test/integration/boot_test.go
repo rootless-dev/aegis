@@ -8,6 +8,7 @@ package integration_test
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -61,24 +62,56 @@ func run(m *testing.M) (int, error) {
 type instance struct {
 	cmd    *exec.Cmd
 	port   string
+	scheme string
+	client *http.Client
 	output *bytes.Buffer
 }
 
 func (i *instance) url(path string) string {
-	return "http://127.0.0.1:" + i.port + path
+	return i.scheme + "://127.0.0.1:" + i.port + path
 }
 
 // start launches the binary from an empty working directory, on a deliberately
 // minimal environment: anything inherited from the developer shell — or a .env
 // picked up by the autoload — would make the run depend on the machine.
+//
+// The topology is declared because production refuses to guess it, which is the
+// point of the setting: these runs stand in for a deployment behind something
+// that is not there, so nothing terminates TLS.
 func start(t *testing.T, extraEnv ...string) *instance {
 	t.Helper()
 
-	workDir := t.TempDir()
 	port := freePort(t)
+
+	env := append([]string{
+		"TLS_TERMINATION=none",
+		"PUBLIC_URL=http://127.0.0.1:" + port,
+	}, extraEnv...)
+
+	return launch(t, port, "http", http.DefaultClient, env, nil)
+}
+
+// startDevelopment exercises the profile flag, where TLS is served from a
+// certificate the process mints for itself and nothing has to be configured.
+func startDevelopment(t *testing.T) *instance {
+	t.Helper()
+
+	client := &http.Client{Transport: &http.Transport{
+		// The certificate was generated seconds ago for this run alone, so there
+		// is no chain to verify it against.
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
+	}}
+
+	return launch(t, freePort(t), "https", client, nil, []string{"--dev"})
+}
+
+func launch(t *testing.T, port, scheme string, client *http.Client, extraEnv, args []string) *instance {
+	t.Helper()
+
+	workDir := t.TempDir()
 	output := &bytes.Buffer{}
 
-	cmd := exec.Command(binaryPath)
+	cmd := exec.Command(binaryPath, args...)
 	cmd.Dir = workDir
 	cmd.Stdout = output
 	cmd.Stderr = output
@@ -94,7 +127,7 @@ func start(t *testing.T, extraEnv ...string) *instance {
 		t.Fatalf("starting the server: %v", err)
 	}
 
-	return &instance{cmd: cmd, port: port, output: output}
+	return &instance{cmd: cmd, port: port, scheme: scheme, client: client, output: output}
 }
 
 func (i *instance) waitReady(t *testing.T) {
@@ -103,7 +136,7 @@ func (i *instance) waitReady(t *testing.T) {
 	deadline := time.Now().Add(bootTimeout)
 
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(i.url("/livez"))
+		resp, err := i.client.Get(i.url("/livez"))
 		if err == nil {
 			resp.Body.Close()
 
@@ -179,10 +212,12 @@ func freePort(t *testing.T) string {
 	return port
 }
 
-func get(t *testing.T, url string) (int, string) {
+func (i *instance) get(t *testing.T, path string) (int, string) {
 	t.Helper()
 
-	resp, err := http.Get(url)
+	url := i.url(path)
+
+	resp, err := i.client.Get(url)
 	if err != nil {
 		t.Fatalf("requesting %s: %v", url, err)
 	}
@@ -197,18 +232,18 @@ func get(t *testing.T, url string) (int, string) {
 }
 
 // TestBootsOnDefaultsAndShutsDownCleanly is the reason this package exists: it
-// proves the binary comes up with nothing but a port set, and leaves on SIGTERM
-// with a success status.
+// proves the binary comes up with nothing but a port and a topology declared,
+// and leaves on SIGTERM with a success status.
 func TestBootsOnDefaultsAndShutsDownCleanly(t *testing.T) {
 	server := start(t)
 	server.waitReady(t)
 
-	status, body := get(t, server.url("/livez"))
+	status, body := server.get(t, "/livez")
 	if status != http.StatusOK || !strings.Contains(body, `"alive"`) {
 		t.Errorf("livez: want 200 alive, got %d %s", status, body)
 	}
 
-	status, body = get(t, server.url("/readyz"))
+	status, body = server.get(t, "/readyz")
 	if status != http.StatusOK || !strings.Contains(body, `"ready"`) {
 		t.Errorf("readyz: want 200 ready, got %d %s", status, body)
 	}
@@ -233,7 +268,7 @@ func TestReadinessFailsWhileDraining(t *testing.T) {
 	var body string
 
 	for time.Now().Before(deadline) {
-		status, body = get(t, server.url("/readyz"))
+		status, body = server.get(t, "/readyz")
 		if status == http.StatusServiceUnavailable {
 			break
 		}
@@ -248,7 +283,7 @@ func TestReadinessFailsWhileDraining(t *testing.T) {
 	// Liveness has to stay up: the process is healthy, it is only leaving
 	// rotation. Failing it here would have the orchestrator restart a container
 	// that is already shutting down correctly.
-	if status, body := get(t, server.url("/livez")); status != http.StatusOK {
+	if status, body := server.get(t, "/livez"); status != http.StatusOK {
 		t.Errorf("livez while draining: want 200, got %d %s", status, body)
 	}
 
@@ -310,5 +345,61 @@ func TestFailsFastOnInvalidConfiguration(t *testing.T) {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("output should mention %q, got:\n%s", want, out)
 		}
+	}
+}
+
+// The two situations this refusal separates produce identical configuration: a
+// deployment whose gateway handles TLS, and one whose certificate was simply
+// forgotten. Only an operator can tell them apart, so production asks.
+func TestRefusesToBootWithoutADeclaredTopology(t *testing.T) {
+	cmd := exec.Command(binaryPath)
+	cmd.Dir = t.TempDir()
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HTTP_SERVER_PORT=" + freePort(t),
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("production must not guess who terminates TLS, output:\n%s", out)
+	}
+
+	for _, want := range []string{"termination is required", "public url is required"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("output should mention %q, got:\n%s", want, out)
+		}
+	}
+}
+
+// Development needs no certificate, no gateway and no public url: it mints its
+// own pair and serves TLS through the same code path production takes.
+func TestDevelopmentServesTLSWithAGeneratedCertificate(t *testing.T) {
+	server := startDevelopment(t)
+	server.waitReady(t)
+
+	status, body := server.get(t, "/livez")
+	if status != http.StatusOK || !strings.Contains(body, `"alive"`) {
+		t.Errorf("livez over TLS: want 200 alive, got %d %s", status, body)
+	}
+
+	if !strings.Contains(server.output.String(), "self-signed certificate generated in memory") {
+		t.Errorf("the generated certificate should be announced, got:\n%s", server.output.String())
+	}
+
+	// A plain request to a TLS listener is answered in the clear, but only to
+	// say it was the wrong scheme: net/http recognizes the handshake that never
+	// happened and refuses rather than serving anything.
+	plain, err := http.Get("http://127.0.0.1:" + server.port + "/livez")
+	if err != nil {
+		t.Fatalf("requesting in the clear: %v", err)
+	}
+	defer plain.Body.Close()
+
+	if plain.StatusCode != http.StatusBadRequest {
+		t.Errorf("plain HTTP against a TLS listener: want 400, got %d", plain.StatusCode)
+	}
+
+	if err := server.terminate(t); err != nil {
+		t.Errorf("clean shutdown expected, got %v:\n%s", err, server.output.String())
 	}
 }

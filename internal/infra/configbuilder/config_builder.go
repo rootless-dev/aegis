@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"time"
 
 	"github.com/rootless-dev/aegis/internal/configs"
 	"github.com/rootless-dev/aegis/internal/infra/envtools"
@@ -22,6 +21,11 @@ var DefaultConfigPaths = []string{
 // it is set, the file has to exist: an explicit path that silently does
 // nothing is worse than a failed boot.
 const ConfigPathEnvVar = "AEGIS_CONFIG_FILE"
+
+// ProfileEnvVar is how an orchestrator selects the execution profile, where
+// passing a command line flag to a container is far more awkward than setting a
+// variable.
+const ProfileEnvVar = "AEGIS_PROFILE"
 
 var ErrConfigInstanceNotInitialized = errors.New("configbuilder: no source was loaded, call WithDefaults before validating or building")
 
@@ -76,8 +80,8 @@ func (b *ConfigBuilder) WithYAML() *ConfigBuilder {
 	return b
 }
 
-// WithEnv applies the environment over whatever is loaded. It comes last
-// because the file is what ships with the image, while a variable is how a
+// WithEnv applies the environment over whatever is loaded. It comes after the
+// file because the file is what ships with the image, while a variable is how a
 // single instance is adjusted without rebuilding anything.
 func (b *ConfigBuilder) WithEnv() *ConfigBuilder {
 	if b.cfg == nil {
@@ -86,29 +90,36 @@ func (b *ConfigBuilder) WithEnv() *ConfigBuilder {
 		return b
 	}
 
-	fromEnv(&b.cfg.AppName, "APP_NAME")
+	applyEnv(b.cfg)
 
-	fromEnv(&b.cfg.Logging.Level, "LOGGING_LEVEL")
-	fromEnv(&b.cfg.Logging.Caller, "LOGGING_CALLER_LEVEL")
-	fromEnv(&b.cfg.Logging.TimeField, "LOGGING_TIME_FIELD")
-	fromEnv(&b.cfg.Logging.TimeFormat, "LOGGING_TIME_FORMAT")
-	fromEnv(&b.cfg.Logging.PrettyEnabled, "LOGGING_PRETTY_ENABLED")
+	return b
+}
 
-	fromEnv(&b.cfg.HttpServer.Host, "HTTP_SERVER_HOST")
-	fromEnv(&b.cfg.HttpServer.Port, "HTTP_SERVER_PORT")
-	fromEnv(&b.cfg.HttpServer.MaxHeaderBytes, "HTTP_SERVER_MAX_HEADER_BYTES")
-	durationFromEnv(&b.cfg.HttpServer.ReadHeaderTimeout, "HTTP_SERVER_READ_HEADER_TIMEOUT")
-	durationFromEnv(&b.cfg.HttpServer.ReadTimeout, "HTTP_SERVER_READ_TIMEOUT")
-	durationFromEnv(&b.cfg.HttpServer.WriteTimeout, "HTTP_SERVER_WRITE_TIMEOUT")
-	durationFromEnv(&b.cfg.HttpServer.IdleTimeout, "HTTP_SERVER_IDLE_TIMEOUT")
-	durationFromEnv(&b.cfg.HttpServer.RequestTimeout, "HTTP_SERVER_REQUEST_TIMEOUT")
+// WithFlags parses and applies the command line, which comes last because it is
+// the most specific source there is: whoever typed it is looking at the process
+// right now.
+func (b *ConfigBuilder) WithFlags(args []string) *ConfigBuilder {
+	if b.cfg == nil {
+		b.err = errors.Join(b.err, ErrConfigInstanceNotInitialized)
 
-	durationFromEnv(&b.cfg.Graceful.Timeout, "GRACEFUL_SHUTDOWN_TIMEOUT")
+		return b
+	}
 
-	durationFromEnv(&b.cfg.Health.CheckTimeout, "HEALTH_CHECK_TIMEOUT")
-	durationFromEnv(&b.cfg.Health.DrainDelay, "HEALTH_DRAIN_DELAY")
+	applyFlags(b.cfg, parseFlags(args))
 
-	fromEnv(&b.cfg.Banner.Enabled, "BANNER_ENABLED")
+	return b
+}
+
+// Normalize resolves what depends on the profile, and therefore can only be
+// settled once every source has had its say.
+func (b *ConfigBuilder) Normalize() *ConfigBuilder {
+	if b.cfg == nil {
+		b.err = errors.Join(b.err, ErrConfigInstanceNotInitialized)
+
+		return b
+	}
+
+	b.cfg.Normalize()
 
 	return b
 }
@@ -137,16 +148,4 @@ func (b *ConfigBuilder) Build() (*configs.Application, error) {
 	}
 
 	return b.cfg, nil
-}
-
-func fromEnv[T envtools.AllowedEnvTypes](target *T, key string) {
-	if value, ok := envtools.Lookup[T](key); ok {
-		*target = value
-	}
-}
-
-func durationFromEnv(target *time.Duration, key string) {
-	if value, ok := envtools.LookupDuration(key); ok {
-		*target = value
-	}
 }

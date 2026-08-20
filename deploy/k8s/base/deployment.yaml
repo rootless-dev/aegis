@@ -27,7 +27,11 @@ spec:
 
       containers:
         - name: aegis
-          image: aegis
+          # Tagged rather than floating: an untagged image resolves to latest,
+          # and two rollouts of the same manifest could land on different
+          # builds. Kustomize overrides it from kustomization.yaml, and
+          # release-please keeps both in step through the annotation.
+          image: aegis:0.0.1 # x-release-please-version
           imagePullPolicy: IfNotPresent
 
           ports:
@@ -37,6 +41,23 @@ spec:
           env:
             - name: HTTP_SERVER_HOST
               value: "0.0.0.0"
+            # No Ingress ships with this base, but an identity provider belongs
+            # behind a gateway that terminates TLS, and that is what the base
+            # assumes. Add the Ingress and keep this as it is; an install where
+            # nothing sits in front sets "none" instead, and one that serves TLS
+            # from the pod sets "app" and mounts a key pair.
+            - name: TLS_TERMINATION
+              value: "proxy"
+            # The peers allowed to speak for the client through the forwarded
+            # headers. MUST match the pod network the gateway calls from: with
+            # the wrong range the headers are ignored, and with the list empty
+            # "proxy" refuses to boot.
+            - name: PROXY_TRUSTED_PROXIES
+              value: "10.0.0.0/8"
+            # MUST be replaced: it is what clients reach this deployment at, and
+            # every issuer and redirect is built from it.
+            - name: PUBLIC_URL
+              value: "https://aegis.example.com"
             - name: LOGGING_PRETTY_ENABLED
               value: "false"
             # Long enough for this Service to stop sending traffic here before

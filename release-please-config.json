@@ -5,6 +5,10 @@
       "release-type": "go",
       "package-name": "aegis",
       "initial-version": "0.0.1",
+      "extra-files": [
+        "deploy/k8s/base/deployment.yaml",
+        "deploy/k8s/base/kustomization.yaml"
+      ],
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "include-v-in-tag": true,
