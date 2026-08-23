@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"testing"
@@ -9,15 +10,27 @@ import (
 
 	"github.com/phuslu/log"
 	"github.com/rootless-dev/aegis/internal/http/server"
+	"github.com/rootless-dev/aegis/internal/infra/certs"
 )
 
+func discardLogger() *log.Logger {
+	return &log.Logger{Writer: log.IOWriter{Writer: io.Discard}}
+}
+
 func newServer(t *testing.T, address string, handler http.Handler) *server.Server {
+	t.Helper()
+
+	return newServerWithTLS(t, address, handler, nil)
+}
+
+func newServerWithTLS(t *testing.T, address string, handler http.Handler, tlsConfig *tls.Config) *server.Server {
 	t.Helper()
 
 	return server.New(server.Options{
 		Address:           address,
 		Handler:           handler,
-		Logger:            &log.Logger{Writer: log.IOWriter{Writer: io.Discard}},
+		Logger:            discardLogger(),
+		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -102,4 +115,62 @@ func waitReady(t *testing.T, url string) {
 	}
 
 	t.Fatal("server did not start")
+}
+
+func TestServesTLSAndNegotiatesHTTP2(t *testing.T) {
+	const address = "127.0.0.1:7593"
+
+	keeper, err := certs.SelfSigned(discardLogger(), certs.DevelopmentHosts)
+	if err != nil {
+		t.Fatalf("generating the certificate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("secure"))
+	})
+
+	srv := newServerWithTLS(t, address, mux, &tls.Config{
+		MinVersion:     tls.VersionTLS12,
+		GetCertificate: keeper.GetCertificate,
+		NextProtos:     []string{"h2", "http/1.1"},
+	})
+
+	srv.Start()
+
+	defer srv.Shutdown(context.Background())
+
+	client := &http.Client{Transport: &http.Transport{
+		// The certificate is self-signed and generated for this run, so there is
+		// no chain to verify against.
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
+		ForceAttemptHTTP2: true,
+	}}
+
+	var resp *http.Response
+
+	for range 100 {
+		resp, err = client.Get("https://" + address + "/")
+		if err == nil {
+			break
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err != nil {
+		t.Fatalf("requesting over TLS: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "secure" {
+		t.Errorf("body: want secure, got %q", body)
+	}
+
+	// A hand built TLS configuration replaces the one net/http would have
+	// assembled, and HTTP/2 disappears with no error when h2 is not advertised.
+	if resp.Proto != "HTTP/2.0" {
+		t.Errorf("protocol: want HTTP/2.0, got %s", resp.Proto)
+	}
 }

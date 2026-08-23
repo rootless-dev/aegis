@@ -11,6 +11,12 @@ type Graceful struct {
 	Timeout time.Duration `yaml:"timeout"`
 }
 
+func defaultGraceful() *Graceful {
+	return &Graceful{
+		Timeout: 20 * time.Second,
+	}
+}
+
 func (cfg *Graceful) Validate() error {
 	if cfg.Timeout <= 0 {
 		return fmt.Errorf("graceful: timeout must be greater than zero, got %s", cfg.Timeout)

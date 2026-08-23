@@ -28,6 +28,7 @@ const (
 	statusNotReady = "not_ready"
 
 	resultHealthy = "ok"
+	resultFailed  = "failed"
 )
 
 // Router is the slice of the HTTP router this package needs. Declaring it here
@@ -40,21 +41,32 @@ type Router interface {
 // which carries the per check timeout.
 type Check func(ctx context.Context) error
 
+// DetailedCheck also describes what it reached — the server, the pool, how long
+// the round trip took. The description is only rendered where RevealErrors
+// allows it: it is diagnostic during development and topology in production.
+type DetailedCheck func(ctx context.Context) (map[string]string, error)
+
 type Options struct {
 	Logger       *log.Logger
 	CheckTimeout time.Duration
 	DrainDelay   time.Duration
+
+	// RevealErrors puts the failure itself in the public report instead of just
+	// naming the check that failed. It is for development: an error carries the
+	// address and the driver behind it.
+	RevealErrors bool
 }
 
 type registeredCheck struct {
 	name string
-	fn   Check
+	fn   DetailedCheck
 }
 
 type Health struct {
 	logger       *log.Logger
 	checkTimeout time.Duration
 	drainDelay   time.Duration
+	revealErrors bool
 
 	mu     sync.RWMutex
 	checks []registeredCheck
@@ -63,8 +75,8 @@ type Health struct {
 }
 
 type report struct {
-	Status string            `json:"status"`
-	Checks map[string]string `json:"checks,omitempty"`
+	Status string                       `json:"status"`
+	Checks map[string]map[string]string `json:"checks,omitempty"`
 }
 
 func New(opts Options) *Health {
@@ -72,11 +84,20 @@ func New(opts Options) *Health {
 		logger:       opts.Logger,
 		checkTimeout: opts.CheckTimeout,
 		drainDelay:   opts.DrainDelay,
+		revealErrors: opts.RevealErrors,
 	}
 }
 
-// Register adds a readiness dependency. Liveness never runs these.
+// Register adds a readiness dependency that only answers yes or no.
+// Liveness never runs these.
 func (h *Health) Register(name string, fn Check) *Health {
+	return h.RegisterDetailed(name, func(ctx context.Context) (map[string]string, error) {
+		return nil, fn(ctx)
+	})
+}
+
+// RegisterDetailed adds one that also describes what it reached.
+func (h *Health) RegisterDetailed(name string, fn DetailedCheck) *Health {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -101,21 +122,24 @@ func (h *Health) Live() http.HandlerFunc {
 	}
 }
 
-// Ready answers whether this instance should receive traffic, without naming
-// the dependency that failed: the endpoint is public, and the names and errors
-// describe internal topology.
+// Ready answers whether this instance should receive traffic, naming each
+// check and whether it passed. What it withholds outside development is the
+// failure itself: "failed" says which dependency is down, while the error
+// behind it would also say where it lives.
 func (h *Health) Ready() http.HandlerFunc {
-	return h.readiness(false)
+	return h.readiness(h.revealErrors)
 }
 
-// ReadyDetailed answers the same question naming each check and its failure.
-// It must only be mounted on the authenticated administration surface.
+// ReadyDetailed reports the failures themselves whatever the profile. It must
+// only be mounted on the authenticated administration surface.
 func (h *Health) ReadyDetailed() http.HandlerFunc {
 	return h.readiness(true)
 }
 
-func (h *Health) readiness(detailed bool) http.HandlerFunc {
+func (h *Health) readiness(revealErrors bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// No checks are run while draining, so the absence of them in the report
+		// is what tells an ordered shutdown apart from a dependency failing.
 		if h.draining.Load() {
 			writeReport(w, http.StatusServiceUnavailable, report{Status: statusNotReady})
 
@@ -125,24 +149,56 @@ func (h *Health) readiness(detailed bool) http.HandlerFunc {
 		results, healthy := h.run(r.Context())
 
 		status := http.StatusOK
-		body := report{Status: statusReady}
+		body := report{Status: statusReady, Checks: describe(results, revealErrors)}
 
 		if !healthy {
 			status = http.StatusServiceUnavailable
 			body.Status = statusNotReady
 		}
 
-		if detailed {
-			body.Checks = results
-		}
-
 		writeReport(w, status, body)
 	}
 }
 
+// describe renders what the report shows for each check: an object carrying
+// the verdict, so the shape is the same whatever the profile, plus whatever
+// the check described and the failure itself where those are safe to read.
+func describe(results map[string]result, revealErrors bool) map[string]map[string]string {
+	described := make(map[string]map[string]string, len(results))
+
+	for name, outcome := range results {
+		rendered := map[string]string{"status": resultHealthy}
+
+		if outcome.err != nil {
+			rendered["status"] = resultFailed
+		}
+
+		if revealErrors {
+			for key, value := range outcome.details {
+				rendered[key] = value
+			}
+
+			if outcome.err != nil {
+				rendered["error"] = outcome.err.Error()
+			}
+		}
+
+		described[name] = rendered
+	}
+
+	return described
+}
+
+// result is one check's outcome: whether it passed, and what it said about the
+// dependency on the way. A check that failed can still have described it.
+type result struct {
+	details map[string]string
+	err     error
+}
+
 // run evaluates the checks concurrently so the probe cost is the slowest check
 // rather than their sum.
-func (h *Health) run(ctx context.Context) (map[string]string, bool) {
+func (h *Health) run(ctx context.Context) (map[string]result, bool) {
 	h.mu.RLock()
 	checks := slices.Clone(h.checks)
 	h.mu.RUnlock()
@@ -150,7 +206,7 @@ func (h *Health) run(ctx context.Context) (map[string]string, bool) {
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
-		results = make(map[string]string, len(checks))
+		results = make(map[string]result, len(checks))
 		healthy = true
 	)
 
@@ -163,19 +219,22 @@ func (h *Health) run(ctx context.Context) (map[string]string, bool) {
 			checkCtx, cancel := context.WithTimeout(ctx, h.checkTimeout)
 			defer cancel()
 
-			err := check.fn(checkCtx)
+			details, err := check.fn(checkCtx)
+			if err != nil {
+				// The public report may withhold this, and the probe is a
+				// moment rather than a history. Whoever is diagnosing needs
+				// both, so the failure is recorded here regardless.
+				h.logger.Warn().Str("check", check.name).Err(err).Msg("readiness check failed")
+			}
 
 			mu.Lock()
 			defer mu.Unlock()
 
+			results[check.name] = result{details: details, err: err}
+
 			if err != nil {
-				results[check.name] = err.Error()
 				healthy = false
-
-				return
 			}
-
-			results[check.name] = resultHealthy
 		}()
 	}
 

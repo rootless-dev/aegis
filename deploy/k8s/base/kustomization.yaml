@@ -10,9 +10,9 @@ resources:
   - deployment.yaml
   - service.yaml
 
-# The tag lives here rather than in the deployment, so releasing means editing
-# one line. An untagged image resolves to latest, which is not reproducible: two
-# rollouts of the same manifest can land on different builds.
+# What overlays override, and what the release bumps. Both this and the tag in
+# the deployment carry the annotation, so release-please writes the new version
+# to each and they cannot drift apart.
 images:
   - name: aegis
-    newTag: 0.0.1
+    newTag: 0.0.1 # x-release-please-version

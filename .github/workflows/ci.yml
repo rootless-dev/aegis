@@ -1,9 +1,17 @@
 name: CI
 
+# On pushes, every branch. Pull requests are deliberately not a trigger: a pull
+# request from this repository carries commits that were already pushed, and the
+# checks are attached to the commit, so they show up on the pull request page
+# either way. Adding the event would only run the whole pipeline twice on the
+# same code — and leave one of the two runs reporting a job it did not need to
+# do.
+#
+# A pull request from a fork has no push here and would not be covered. When
+# that day comes, the event comes back with the jobs restricted to forks, which
+# still does not duplicate anything.
 on:
   push:
-    branches: [main, develop]
-  pull_request:
 
 # Least privilege by default. Any job needing more raises it for itself.
 permissions:
@@ -53,9 +61,13 @@ jobs:
           path: coverage.out
           retention-days: 7
 
-  build:
-    name: Build
+  engines:
+    name: Engine (${{ matrix.database }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres, mysql, mariadb]
     steps:
       - uses: actions/checkout@v7
 
@@ -68,19 +80,56 @@ jobs:
         run: go build -o bin/aegisd ./cmd/server
 
       # The binary has to survive a boot with no environment at all, which is
-      # what catches a default that stopped being valid.
-      # Compiles the binary and runs it: boot on defaults, the shutdown
-      # ordering, and a refused boot on invalid configuration. None of that is
-      # reachable from the unit tests, which build the configuration by hand
-      # and never go through main.
+      # what catches a default that stopped being valid. Compiles the binary
+      # and runs it: boot on defaults, the shutdown ordering, and a refused
+      # boot on invalid configuration. None of that is reachable from the unit
+      # tests, which build the configuration by hand and never go through
+      # main.
+      #
+      # Four engines, because a customer runs whichever one they already
+      # operate. Collation, isolation level and DDL transactionality differ
+      # between them, and this matrix is the only place that difference is
+      # exercised.
       - name: Integration tests
-        run: go test -tags=integration -timeout=5m ./test/integration/...
+        env:
+          AEGIS_TEST_DRIVER: ${{ matrix.database }}
+        run: go test -tags=integration -timeout=15m ./internal/... ./test/integration/...
 
       - uses: actions/upload-artifact@v7
         with:
-          name: aegisd
+          # Suffixed per matrix leg: the step above now runs once per engine,
+          # and an unsuffixed name would collide across them.
+          name: aegisd-${{ matrix.database }}
           path: bin/aegisd
           retention-days: 7
+
+  # The name branch protection requires. A matrix reports one context per leg,
+  # so requiring the matrix job by name means editing the repository settings
+  # every time an engine joins or leaves it — and until someone does, the
+  # required context never arrives and the pull request stays blocked with
+  # everything green. This job is that stable name, and the matrix is free to
+  # grow underneath it.
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: engines
+    # Without always(), a failing leg leaves this skipped rather than failed,
+    # and a required context that is skipped never reports at all — the exact
+    # state this job exists to avoid.
+    if: always()
+    steps:
+      - name: Check the engine matrix
+        # result is the aggregate of every leg: success only when all of them
+        # succeeded, which is what the required context has to mean.
+        run: |
+          result="${{ needs.engines.result }}"
+
+          if [ "$result" != "success" ]; then
+            echo "The engine matrix did not pass: $result"
+            exit 1
+          fi
+
+          echo "Every engine passed."
 
   gosec:
     name: Security (gosec)
@@ -99,9 +148,15 @@ jobs:
     name: Security (SonarQube)
     runs-on: ubuntu-latest
     needs: test
-    # Community Edition analyses a single branch: running it on pull requests
-    # would overwrite the main branch results with the branch under review.
-    if: github.event_name == 'push'
+    # No condition: the analysis is part of the pipeline, not something that
+    # applies to some events and not others.
+    #
+    # Community Edition has no branch model, so every analysis lands on the same
+    # project and the dashboard shows whichever branch ran last. That is the
+    # price of catching problems while the branch is still open, and the merge
+    # into develop restores the picture. Branch and pull request analysis are
+    # Developer Edition features; SonarQube Cloud offers them free for public
+    # repositories.
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       # A secret rather than a variable: this repository is public, so its
@@ -122,6 +177,81 @@ jobs:
       - name: Scan
         if: env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != ''
         uses: SonarSource/sonarqube-scan-action@v8
+        with:
+          # Without waiting, the scanner uploads the analysis and leaves, so the
+          # job passes while the server is still deciding — and a failed gate
+          # reaches nobody. Waiting makes the verdict part of the build.
+          args: -Dsonar.qualitygate.wait=true
+
+      # A failed gate stops the build with a status and a link, which is not much
+      # to go on when the log is all somebody has. This spells out the
+      # conditions that failed and the issues behind them — file, line and rule
+      # — in the log and in the run summary, so the reason travels with the
+      # build instead of living on a server somebody has to go open.
+      - name: Explain the quality gate
+        if: failure()
+        run: |
+          key=$(awk -F= '/^sonar.projectKey=/{print $2}' sonar-project.properties)
+
+          if ! gate=$(curl -sSf -u "$SONAR_TOKEN:" \
+            "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$key"); then
+            echo "The quality gate could not be read back; see the analysis on the server."
+            exit 0
+          fi
+
+          # Issues are fetched separately: the gate reports how many conditions
+          # failed, never which code failed them.
+          issues=$(curl -sSf -u "$SONAR_TOKEN:" \
+            "$SONAR_HOST_URL/api/issues/search?componentKeys=$key&resolved=false&inNewCodePeriod=true&ps=25" \
+            || echo '{}')
+
+          # Both bodies travel in the environment: the heredoc already owns
+          # stdin, so a pipe into python would be swallowed by the script itself.
+          GATE="$gate" ISSUES="$issues" python3 - "$key" <<'PYTHON' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          import sys
+
+          project = sys.argv[1]
+          status = json.loads(os.environ["GATE"]).get("projectStatus", {})
+
+          print(f"## Quality gate: {status.get('status', 'unknown')}")
+          print()
+          print(f"Project `{project}`.")
+          print()
+
+          failed = [c for c in status.get("conditions", []) if c.get("status") == "ERROR"]
+
+          if not failed:
+              print("No condition is reported as failing, so the build stopped for another reason.")
+
+          for condition in failed:
+              comparator = {"LT": "<", "GT": ">", "EQ": "=", "NE": "!="}.get(
+                  condition.get("comparator", ""), condition.get("comparator", "")
+              )
+              print(
+                  f"- `{condition.get('metricKey')}`: {condition.get('actualValue')} "
+                  f"(fails when {comparator} {condition.get('errorThreshold')})"
+              )
+
+          issues = json.loads(os.environ.get("ISSUES") or "{}").get("issues", [])
+
+          if issues:
+              print()
+              print("### Issues in new code")
+              print()
+
+          for issue in issues:
+              # The component is prefixed with the project key, which says
+              # nothing the reader does not already know.
+              where = issue.get("component", "").split(":", 1)[-1]
+              line = issue.get("line")
+              print(
+                  f"- `{where}{f':{line}' if line else ''}` "
+                  f"[{issue.get('severity', '?')}] {issue.get('message', '')} "
+                  f"({issue.get('rule', '')})"
+              )
+          PYTHON
 
       - name: Skipped
         if: env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == ''

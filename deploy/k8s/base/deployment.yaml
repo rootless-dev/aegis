@@ -27,7 +27,11 @@ spec:
 
       containers:
         - name: aegis
-          image: aegis
+          # Tagged rather than floating: an untagged image resolves to latest,
+          # and two rollouts of the same manifest could land on different
+          # builds. Kustomize overrides it from kustomization.yaml, and
+          # release-please keeps both in step through the annotation.
+          image: aegis:0.0.1 # x-release-please-version
           imagePullPolicy: IfNotPresent
 
           ports:
@@ -37,6 +41,61 @@ spec:
           env:
             - name: HTTP_SERVER_HOST
               value: "0.0.0.0"
+            # No Ingress ships with this base, but an identity provider belongs
+            # behind a gateway that terminates TLS, and that is what the base
+            # assumes. Add the Ingress and keep this as it is; an install where
+            # nothing sits in front sets "none" instead, and one that serves TLS
+            # from the pod sets "app" and mounts a key pair.
+            - name: TLS_TERMINATION
+              value: "proxy"
+            # The peers allowed to speak for the client through the forwarded
+            # headers. MUST match the pod network the gateway calls from: with
+            # the wrong range the headers are ignored, and with the list empty
+            # "proxy" refuses to boot.
+            - name: PROXY_TRUSTED_PROXIES
+              value: "10.0.0.0/8"
+            # MUST be replaced: it is what clients reach this deployment at, and
+            # every issuer and redirect is built from it.
+            - name: PUBLIC_URL
+              value: "https://aegis.example.com"
+
+            # One of postgres, mysql or mariadb. There is no default: only the
+            # operator knows which engine backs this deployment, and a guess
+            # would pick the wrong migration lineage. sqlite is a development
+            # engine and the prod profile this base runs under refuses it.
+            - name: DATABASE_DRIVER
+              value: "postgres"
+            # MUST be replaced: the database server this deployment connects to.
+            - name: DATABASE_HOST
+              value: "db.internal"
+            - name: DATABASE_PORT
+              value: "5432"
+            - name: DATABASE_NAME
+              value: "aegis"
+            - name: DATABASE_USER
+              value: "aegis"
+            # Never a plain value here, and never in a ConfigMap: a secret that
+            # can be read from a manifest eventually ends up committed. Create
+            # the Secret out of band, e.g.
+            # kubectl create secret generic aegis-database --from-literal=password=...
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aegis-database
+                  key: password
+            # verify-full authenticates the server as well as encrypting the
+            # connection; see docs/configuration.md for the full vocabulary.
+            - name: DATABASE_SSL_MODE
+              value: "verify-full"
+            # Read only by ssl_mode verify-ca and verify-full. Commented out on
+            # purpose, the way "path" is in aegis.example.yaml: the base mounts
+            # no volume for it, and readOnlyRootFilesystem means the path above
+            # would fail to open if left uncommented -- an installation against
+            # a private CA has to add both the volume and this variable
+            # together, not just this value.
+            # - name: DATABASE_SSL_ROOT_CERT
+            #   value: "/etc/aegis/db-ca.pem"
+
             - name: LOGGING_PRETTY_ENABLED
               value: "false"
             # Long enough for this Service to stop sending traffic here before

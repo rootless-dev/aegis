@@ -17,11 +17,31 @@ services:
       - "7500:7500"
       - "2345:2345"
     environment:
+      # Development profile: TLS is served from a certificate generated in
+      # memory at every boot, so the loop exercises the same path production
+      # takes and the service answers on https://localhost:7500.
+      AEGIS_PROFILE: dev
       HTTP_SERVER_HOST: 0.0.0.0
       LOGGING_LEVEL: debug
       LOGGING_PRETTY_ENABLED: "true"
       # No load balancer here, so there is nothing to wait for on shutdown.
       HEALTH_DRAIN_DELAY: "1s"
+      # Against the engine a customer runs, not against sqlite: concurrent
+      # writes, locking, types and transactional DDL all differ, and they are
+      # what this service is going to depend on. Running the binary by hand
+      # still falls back to sqlite.
+      DATABASE_DRIVER: postgres
+      DATABASE_HOST: postgres
+      DATABASE_NAME: aegis
+      DATABASE_USER: aegis
+      DATABASE_PASSWORD: devpassword
+      # Declared rather than left empty: an empty mode means "prefer", which
+      # falls back to an unencrypted connection without saying so. On a
+      # container next to this one, unencrypted is the deliberate answer.
+      DATABASE_SSL_MODE: disable
+    depends_on:
+      postgres:
+        condition: service_healthy
     # delve traces the process it debugs, which the default seccomp and apparmor
     # profiles block.
     cap_add:
@@ -30,6 +50,54 @@ services:
       - apparmor=unconfined
       - seccomp=unconfined
 
+  # What the service above connects to. The version the integration matrix and
+  # the Tilt overlay use, so the three environments agree.
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: aegis
+      POSTGRES_USER: aegis
+      POSTGRES_PASSWORD: devpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # The port is open well before the server finishes initialising, so
+    # depends_on without this would hand the application a database that is not
+    # accepting connections yet.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegis -d aegis"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Behind a profile so the default loop stays two containers. These exist to
+  # shorten the gap to production when a change touches SQL, and are started by
+  # hand: docker compose --profile dialects up.
+  mysql:
+    profiles: ["dialects"]
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: aegis
+      MYSQL_USER: aegis
+      MYSQL_PASSWORD: aegis
+      MYSQL_ROOT_PASSWORD: aegis
+    ports:
+      - "3306:3306"
+
+  mariadb:
+    profiles: ["dialects"]
+    image: mariadb:10.6
+    environment:
+      MARIADB_DATABASE: aegis
+      MARIADB_USER: aegis
+      MARIADB_PASSWORD: aegis
+      MARIADB_ROOT_PASSWORD: aegis
+    ports:
+      - "3307:3306"
+
 volumes:
   go-mod-cache:
   go-build-cache:
+  # Survives `docker compose down`; `down -v` is what resets the database.
+  postgres-data:
