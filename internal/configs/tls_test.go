@@ -14,6 +14,7 @@ func production(t *testing.T) *configs.Application {
 
 	cfg := configs.Default()
 	cfg.PublicURL = "https://auth.example.com"
+	cfg.Database = serverDatabase()
 
 	return cfg
 }

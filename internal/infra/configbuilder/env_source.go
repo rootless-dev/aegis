@@ -24,6 +24,7 @@ func applyEnv(cfg *configs.Application) {
 	applyGraceful(cfg.Graceful)
 	applyHealth(cfg.Health)
 	applyBanner(cfg.Banner)
+	applyDatabase(cfg.Database)
 }
 
 // The nil checks are not defensive noise: a document writing `logging:` with no
@@ -110,6 +111,36 @@ func applyBanner(cfg *configs.Banner) {
 	}
 
 	fromEnv(&cfg.Enabled, "BANNER_ENABLED")
+}
+
+func applyDatabase(cfg *configs.Database) {
+	if cfg == nil {
+		return
+	}
+
+	typedFromEnv(&cfg.Driver, "DATABASE_DRIVER")
+	fromEnv(&cfg.Host, "DATABASE_HOST")
+	fromEnv(&cfg.Port, "DATABASE_PORT")
+	fromEnv(&cfg.Name, "DATABASE_NAME")
+	fromEnv(&cfg.User, "DATABASE_USER")
+	fromEnv(&cfg.Password, "DATABASE_PASSWORD")
+	fromEnv(&cfg.Path, "DATABASE_PATH")
+	fromEnv(&cfg.SSLMode, "DATABASE_SSL_MODE")
+	fromEnv(&cfg.SSLRootCert, "DATABASE_SSL_ROOT_CERT")
+	durationFromEnv(&cfg.ConnectTimeout, "DATABASE_CONNECT_TIMEOUT")
+
+	applyDatabasePool(cfg.Pool)
+}
+
+func applyDatabasePool(cfg *configs.Pool) {
+	if cfg == nil {
+		return
+	}
+
+	fromEnv(&cfg.MaxOpen, "DATABASE_POOL_MAX_OPEN")
+	fromEnv(&cfg.MaxIdle, "DATABASE_POOL_MAX_IDLE")
+	durationFromEnv(&cfg.ConnMaxLifetime, "DATABASE_POOL_CONN_MAX_LIFETIME")
+	durationFromEnv(&cfg.ConnMaxIdleTime, "DATABASE_POOL_CONN_MAX_IDLE_TIME")
 }
 
 func fromEnv[T envtools.AllowedEnvTypes](target *T, key string) {

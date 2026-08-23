@@ -15,7 +15,7 @@ import (
 // settingPrefixes covers every variable the builder reads.
 var settingPrefixes = []string{
 	"AEGIS_", "APP_", "PUBLIC_URL", "LOGGING_", "HTTP_SERVER_",
-	"TLS_", "PROXY_", "HSTS_", "GRACEFUL_", "HEALTH_", "BANNER_",
+	"TLS_", "PROXY_", "HSTS_", "GRACEFUL_", "HEALTH_", "BANNER_", "DATABASE_",
 }
 
 // TestMain runs these tests against an empty environment. The builder reads the
@@ -57,6 +57,21 @@ func writeConfig(t *testing.T, content string) {
 func development() []string {
 	return []string{"--dev"}
 }
+
+// productionDatabase is what tests that are not about the database use to
+// reach a valid one under the production profile: a driver is required, and
+// repeating a full section inline would bury what each test covers. Env vars
+// are not an option here — DATABASE_* is not read until Task 2 — so this
+// goes through the file source instead, the only other one already wired for
+// every field this struct declares.
+const productionDatabase = `
+database:
+  driver: postgres
+  host: db.internal
+  name: aegis
+  user: aegis
+  ssl_mode: require
+`
 
 func TestBuildWithoutDefaultsFails(t *testing.T) {
 	_, err := configbuilder.New().WithEnv().Validate().Build()
@@ -310,12 +325,15 @@ func TestProfileComesFromTheEnvironment(t *testing.T) {
 // The flag is the most specific source there is: whoever typed it is looking at
 // the process right now.
 func TestFlagWinsOverTheEnvironment(t *testing.T) {
+	writeConfig(t, productionDatabase)
+
 	t.Setenv(configbuilder.ProfileEnvVar, "dev")
 	t.Setenv("TLS_TERMINATION", "none")
 	t.Setenv("PUBLIC_URL", "http://aegis.test")
 
 	cfg, err := configbuilder.New().
 		WithDefaults().
+		WithYAML().
 		WithEnv().
 		WithFlags([]string{"--dev=false"}).
 		Normalize().
@@ -352,11 +370,13 @@ func TestAbsentFlagLeavesTheEnvironmentAlone(t *testing.T) {
 }
 
 func TestTrustedProxiesAreReadAsAList(t *testing.T) {
+	writeConfig(t, productionDatabase)
+
 	t.Setenv("TLS_TERMINATION", "proxy")
 	t.Setenv("PUBLIC_URL", "https://auth.example.com")
 	t.Setenv("PROXY_TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.10 ,")
 
-	cfg, err := configbuilder.New().WithDefaults().WithEnv().Normalize().Validate().Build()
+	cfg, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().Normalize().Validate().Build()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -405,6 +425,8 @@ func TestFlagsAreParsedFromTheArguments(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			writeConfig(t, productionDatabase)
+
 			// Set so "absent" proves the flag stayed out of the way rather than
 			// happening to agree with the default.
 			t.Setenv(configbuilder.ProfileEnvVar, "dev")
@@ -413,6 +435,7 @@ func TestFlagsAreParsedFromTheArguments(t *testing.T) {
 
 			cfg, err := configbuilder.New().
 				WithDefaults().
+				WithYAML().
 				WithEnv().
 				WithFlags(tc.args).
 				Normalize().
@@ -426,5 +449,59 @@ func TestFlagsAreParsedFromTheArguments(t *testing.T) {
 				t.Errorf("profile: want %q, got %q", tc.wants, cfg.Profile)
 			}
 		})
+	}
+}
+
+func TestDatabaseComesFromTheEnvironment(t *testing.T) {
+	t.Setenv("DATABASE_DRIVER", "mysql")
+	t.Setenv("DATABASE_HOST", "db.internal")
+	t.Setenv("DATABASE_PORT", "3306")
+	t.Setenv("DATABASE_NAME", "aegis")
+	t.Setenv("DATABASE_USER", "aegis")
+	t.Setenv("DATABASE_PASSWORD", "secret")
+	t.Setenv("DATABASE_POOL_MAX_OPEN", "40")
+	t.Setenv("DATABASE_CONNECT_TIMEOUT", "3s")
+
+	cfg, err := configbuilder.New().
+		WithDefaults().
+		WithEnv().
+		Build()
+	if err != nil {
+		t.Fatalf("building the configuration: %v", err)
+	}
+
+	if cfg.Database.Driver != configs.DriverMySQL {
+		t.Fatalf("expected the driver to come from the environment, got %q", cfg.Database.Driver)
+	}
+
+	if cfg.Database.Password != "secret" {
+		t.Fatal("expected the password to come from the environment")
+	}
+
+	if cfg.Database.Pool.MaxOpen != 40 {
+		t.Fatalf("expected max open to come from the environment, got %d", cfg.Database.Pool.MaxOpen)
+	}
+
+	if cfg.Database.ConnectTimeout != 3*time.Second {
+		t.Fatalf("expected the connect timeout to come from the environment, got %s", cfg.Database.ConnectTimeout)
+	}
+}
+
+// The password must never be reachable from the configuration file, or it ends
+// up committed to a repository somewhere.
+func TestThePasswordCannotComeFromTheFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "aegis.yaml")
+
+	document := "database:\n  driver: postgres\n  password: secret\n"
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatalf("writing the configuration file: %v", err)
+	}
+
+	t.Setenv(configbuilder.ConfigPathEnvVar, path)
+
+	_, err := configbuilder.New().WithDefaults().WithYAML().Build()
+	if err == nil {
+		t.Fatal("expected a password in the file to fail the boot")
 	}
 }
