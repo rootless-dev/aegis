@@ -31,7 +31,7 @@ spec:
           # and two rollouts of the same manifest could land on different
           # builds. Kustomize overrides it from kustomization.yaml, and
           # release-please keeps both in step through the annotation.
-          image: aegis:0.0.1 # x-release-please-version
+          image: aegis:0.0.3 # x-release-please-version
           imagePullPolicy: IfNotPresent
 
           ports:
