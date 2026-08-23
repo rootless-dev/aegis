@@ -113,10 +113,17 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     needs: engines
-    # Without always(), a failing leg leaves this skipped rather than failed,
-    # and a required context that is skipped never reports at all — the exact
-    # state this job exists to avoid.
-    if: always()
+    # always() so a failing leg cannot leave this skipped: a required context
+    # that never reports blocks the pull request with everything else green,
+    # which is the state this job exists to avoid.
+    #
+    # !cancelled() because a cancelled run is not a failing one. The release
+    # flow pushes twice to the same branch seconds apart — the release branch,
+    # then the changelog commit on top of it — so cancel-in-progress kills the
+    # first run every single release. Reporting that as a failed build would
+    # paint a red run in the history at each one, for a run that was replaced
+    # rather than broken. The run that replaced it is what reports.
+    if: always() && !cancelled()
     steps:
       - name: Check the engine matrix
         # result is the aggregate of every leg: success only when all of them
