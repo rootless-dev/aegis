@@ -1,8 +1,30 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Repeated from the base: its own namespace transformation only reaches the
+# resources it lists, so anything added here would be applied to whatever
+# namespace happens to be current.
+namespace: aegis
+
 resources:
   - ../../base
+  - postgres.yaml
+
+# The Secret the base already reads from, created here so the development loop
+# exercises the same path production takes instead of a literal in the patch.
+# The name is fixed rather than hashed: nothing here needs a rollout when the
+# password changes, and both the application and the database refer to it.
+# The password deliberately shares no substring with anything else here: Tilt
+# redacts secret values everywhere they appear in its output, so a password of
+# "aegis" would blank out the namespace, the pod names and the image tag in
+# every line it prints.
+secretGenerator:
+  - name: aegis-database
+    literals:
+      - password=devpassword
+
+generatorOptions:
+  disableNameSuffixHash: true
 
 patches:
   - path: development.yaml
