@@ -7,88 +7,41 @@
 package integration_test
 
 import (
-	"bytes"
 	"crypto/tls"
-	"fmt"
-	"io"
-	"net"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
 
-const (
-	bootTimeout     = 20 * time.Second
-	shutdownTimeout = 30 * time.Second
-)
-
-var binaryPath string
-
-func TestMain(m *testing.M) {
-	code, err := run(m)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	os.Exit(code)
-}
-
-// run exists so the temporary directory is still removed: os.Exit skips defers.
-func run(m *testing.M) (int, error) {
-	dir, err := os.MkdirTemp("", "aegis-integration-")
-	if err != nil {
-		return 0, fmt.Errorf("creating the work directory: %w", err)
-	}
-	defer os.RemoveAll(dir)
-
-	binaryPath = filepath.Join(dir, "aegisd")
-
-	build := exec.Command("go", "build", "-o", binaryPath, "./cmd/server")
-	build.Dir = filepath.Join("..", "..")
-
-	if out, err := build.CombinedOutput(); err != nil {
-		return 0, fmt.Errorf("building the server: %w\n%s", err, out)
-	}
-
-	return m.Run(), nil
-}
-
-type instance struct {
-	cmd    *exec.Cmd
-	port   string
-	scheme string
-	client *http.Client
-	output *bytes.Buffer
-}
-
-func (i *instance) url(path string) string {
-	return i.scheme + "://127.0.0.1:" + i.port + path
-}
-
-// start launches the binary from an empty working directory, on a deliberately
-// minimal environment: anything inherited from the developer shell — or a .env
-// picked up by the autoload — would make the run depend on the machine.
-//
-// The topology is declared because production refuses to guess it, which is the
-// point of the setting: these runs stand in for a deployment behind something
-// that is not there, so nothing terminates TLS.
+// start launches the binary from a production-shaped environment: the
+// topology and the database driver are declared, because production refuses
+// to guess either one. It runs against a real Postgres container — Task 8 made
+// the assembly connect for real, so nothing shy of a real server proves the
+// boot still works.
 func start(t *testing.T, extraEnv ...string) *instance {
 	t.Helper()
 
-	port := freePort(t)
+	dbHost, dbPort, _ := startPostgres(t)
+	appPort := freePort(t)
 
 	env := append([]string{
 		"TLS_TERMINATION=none",
-		"PUBLIC_URL=http://127.0.0.1:" + port,
+		// Matches the port the server is actually told to listen on below,
+		// same as before this suite ran against a real container: nothing
+		// asserts on PUBLIC_URL, but a value that could not possibly be this
+		// process's own address is a needless way to invite confusion later.
+		"PUBLIC_URL=http://127.0.0.1:" + appPort,
+		"DATABASE_DRIVER=postgres",
+		"DATABASE_HOST=" + dbHost,
+		"DATABASE_PORT=" + dbPort,
+		"DATABASE_NAME=aegis",
+		"DATABASE_USER=aegis",
+		"DATABASE_PASSWORD=aegis",
+		"DATABASE_SSL_MODE=disable",
 	}, extraEnv...)
 
-	return launch(t, port, "http", http.DefaultClient, env, nil)
+	return launch(t, appPort, "http", http.DefaultClient, env, nil)
 }
 
 // startDevelopment exercises the profile flag, where TLS is served from a
@@ -105,138 +58,12 @@ func startDevelopment(t *testing.T) *instance {
 	return launch(t, freePort(t), "https", client, nil, []string{"--dev"})
 }
 
-func launch(t *testing.T, port, scheme string, client *http.Client, extraEnv, args []string) *instance {
-	t.Helper()
-
-	workDir := t.TempDir()
-	output := &bytes.Buffer{}
-
-	cmd := exec.Command(binaryPath, args...)
-	cmd.Dir = workDir
-	cmd.Stdout = output
-	cmd.Stderr = output
-	cmd.Env = append([]string{
-		"PATH=" + os.Getenv("PATH"),
-		"HTTP_SERVER_HOST=127.0.0.1",
-		"HTTP_SERVER_PORT=" + port,
-		// The default drain waits for a load balancer that does not exist here.
-		"HEALTH_DRAIN_DELAY=1s",
-	}, extraEnv...)
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("starting the server: %v", err)
-	}
-
-	return &instance{cmd: cmd, port: port, scheme: scheme, client: client, output: output}
-}
-
-func (i *instance) waitReady(t *testing.T) {
-	t.Helper()
-
-	deadline := time.Now().Add(bootTimeout)
-
-	for time.Now().Before(deadline) {
-		resp, err := i.client.Get(i.url("/livez"))
-		if err == nil {
-			resp.Body.Close()
-
-			return
-		}
-
-		// Signal 0 only probes whether the process is still there. Without it a
-		// refused boot would be reported as a timeout, hiding the real reason.
-		if err := i.cmd.Process.Signal(syscall.Signal(0)); err != nil {
-			t.Fatalf("server exited before answering:\n%s", i.output.String())
-		}
-
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	_ = i.cmd.Process.Kill()
-	t.Fatalf("server did not answer within %s:\n%s", bootTimeout, i.output.String())
-}
-
-// terminate asks the process to stop and waits for it. A second signal is not
-// sent: the shutdown treats it as an order to give up waiting and exits with a
-// failure status.
-func (i *instance) terminate(t *testing.T) error {
-	t.Helper()
-
-	i.signal(t)
-
-	return i.wait(t)
-}
-
-func (i *instance) signal(t *testing.T) {
-	t.Helper()
-
-	if err := i.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("signalling the server: %v", err)
-	}
-}
-
-// wait reports how the process exited, which is what tells a clean shutdown
-// from one cut short.
-func (i *instance) wait(t *testing.T) error {
-	t.Helper()
-
-	exited := make(chan error, 1)
-
-	go func() { exited <- i.cmd.Wait() }()
-
-	select {
-	case err := <-exited:
-		return err
-	case <-time.After(shutdownTimeout):
-		_ = i.cmd.Process.Kill()
-		t.Fatalf("server did not exit within %s:\n%s", shutdownTimeout, i.output.String())
-
-		return nil
-	}
-}
-
-func freePort(t *testing.T) string {
-	t.Helper()
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserving a port: %v", err)
-	}
-	defer listener.Close()
-
-	_, port, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		t.Fatalf("reading the reserved port: %v", err)
-	}
-
-	return port
-}
-
-func (i *instance) get(t *testing.T, path string) (int, string) {
-	t.Helper()
-
-	url := i.url(path)
-
-	resp, err := i.client.Get(url)
-	if err != nil {
-		t.Fatalf("requesting %s: %v", url, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("reading %s: %v", url, err)
-	}
-
-	return resp.StatusCode, string(body)
-}
-
 // TestBootsOnDefaultsAndShutsDownCleanly is the reason this package exists: it
-// proves the binary comes up with nothing but a port and a topology declared,
-// and leaves on SIGTERM with a success status.
+// proves the binary comes up with nothing but a port, a topology and a
+// database driver declared, and leaves on SIGTERM with a success status.
 func TestBootsOnDefaultsAndShutsDownCleanly(t *testing.T) {
 	server := start(t)
-	server.waitReady(t)
+	waitUntilReady(t, server)
 
 	status, body := server.get(t, "/livez")
 	if status != http.StatusOK || !strings.Contains(body, `"alive"`) {
@@ -248,9 +75,24 @@ func TestBootsOnDefaultsAndShutsDownCleanly(t *testing.T) {
 		t.Errorf("readyz: want 200 ready, got %d %s", status, body)
 	}
 
-	if err := server.terminate(t); err != nil {
-		t.Errorf("clean shutdown expected, got %v:\n%s", err, server.output.String())
+	// The database announces itself once it is actually connected, which is
+	// where an operator finds what this process reached. start sets the
+	// password to "aegis", so its absence next to a real driver/host pair is
+	// what proves the dsn, which carries it, was not logged either.
+	output := server.output.String()
+	if !strings.Contains(output, `"database connected"`) {
+		t.Errorf("expected the database to announce itself in the startup log, got:\n%s", output)
 	}
+
+	if !strings.Contains(output, `"driver":"postgres"`) {
+		t.Errorf("expected the resolved driver in that announcement, got:\n%s", output)
+	}
+
+	if strings.Contains(output, "aegis:aegis@") || strings.Contains(output, "DATABASE_PASSWORD=aegis") {
+		t.Errorf("expected the database password not to appear in the log, got:\n%s", output)
+	}
+
+	stopBinary(t, server)
 }
 
 // TestReadinessFailsWhileDraining covers the ordering the graceful shutdown
@@ -258,7 +100,7 @@ func TestBootsOnDefaultsAndShutsDownCleanly(t *testing.T) {
 // the load balancer keeps routing here after the door closes.
 func TestReadinessFailsWhileDraining(t *testing.T) {
 	server := start(t, "HEALTH_DRAIN_DELAY=5s")
-	server.waitReady(t)
+	waitUntilReady(t, server)
 	server.signal(t)
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -299,7 +141,7 @@ func TestReadinessFailsWhileDraining(t *testing.T) {
 // process leaves with a failure status.
 func TestSecondSignalStopsWaiting(t *testing.T) {
 	server := start(t, "HEALTH_DRAIN_DELAY=15s")
-	server.waitReady(t)
+	waitUntilReady(t, server)
 
 	server.signal(t)
 	// The first signal starts a 15s drain; the second must cut it short well
@@ -307,14 +149,14 @@ func TestSecondSignalStopsWaiting(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	server.signal(t)
 
-	start := time.Now()
+	startedAt := time.Now()
 
 	err := server.wait(t)
 	if err == nil {
 		t.Error("a forced exit must report a failure status")
 	}
 
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	if elapsed := time.Since(startedAt); elapsed > 5*time.Second {
 		t.Errorf("the second signal should not wait for the drain, took %s", elapsed)
 	}
 
@@ -326,15 +168,10 @@ func TestSecondSignalStopsWaiting(t *testing.T) {
 // TestFailsFastOnInvalidConfiguration keeps the boot from starting half broken:
 // the process must refuse to come up and say what is wrong.
 func TestFailsFastOnInvalidConfiguration(t *testing.T) {
-	cmd := exec.Command(binaryPath)
-	cmd.Dir = t.TempDir()
-	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
+	out, err := runBinaryToCompletion(t, nil, []string{
 		"HTTP_SERVER_PORT=not-a-port",
 		"LOGGING_LEVEL=banana",
-	}
-
-	out, err := cmd.CombinedOutput()
+	})
 	if err == nil {
 		t.Fatalf("an invalid configuration must not boot, output:\n%s", out)
 	}
@@ -342,7 +179,7 @@ func TestFailsFastOnInvalidConfiguration(t *testing.T) {
 	// Both problems have to be reported together, or fixing a misconfigured
 	// deployment costs one restart per variable.
 	for _, want := range []string{"invalid configuration", "invalid port", "unsupported level"} {
-		if !strings.Contains(string(out), want) {
+		if !strings.Contains(out, want) {
 			t.Errorf("output should mention %q, got:\n%s", want, out)
 		}
 	}
@@ -352,20 +189,13 @@ func TestFailsFastOnInvalidConfiguration(t *testing.T) {
 // deployment whose gateway handles TLS, and one whose certificate was simply
 // forgotten. Only an operator can tell them apart, so production asks.
 func TestRefusesToBootWithoutADeclaredTopology(t *testing.T) {
-	cmd := exec.Command(binaryPath)
-	cmd.Dir = t.TempDir()
-	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HTTP_SERVER_PORT=" + freePort(t),
-	}
-
-	out, err := cmd.CombinedOutput()
+	out, err := runBinaryToCompletion(t, nil, []string{"HTTP_SERVER_PORT=" + freePort(t)})
 	if err == nil {
 		t.Fatalf("production must not guess who terminates TLS, output:\n%s", out)
 	}
 
 	for _, want := range []string{"termination is required", "public url is required"} {
-		if !strings.Contains(string(out), want) {
+		if !strings.Contains(out, want) {
 			t.Errorf("output should mention %q, got:\n%s", want, out)
 		}
 	}
@@ -375,7 +205,7 @@ func TestRefusesToBootWithoutADeclaredTopology(t *testing.T) {
 // own pair and serves TLS through the same code path production takes.
 func TestDevelopmentServesTLSWithAGeneratedCertificate(t *testing.T) {
 	server := startDevelopment(t)
-	server.waitReady(t)
+	waitUntilReady(t, server)
 
 	status, body := server.get(t, "/livez")
 	if status != http.StatusOK || !strings.Contains(body, `"alive"`) {
@@ -399,7 +229,5 @@ func TestDevelopmentServesTLSWithAGeneratedCertificate(t *testing.T) {
 		t.Errorf("plain HTTP against a TLS listener: want 400, got %d", plain.StatusCode)
 	}
 
-	if err := server.terminate(t); err != nil {
-		t.Errorf("clean shutdown expected, got %v:\n%s", err, server.output.String())
-	}
+	stopBinary(t, server)
 }
