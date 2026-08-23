@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.0.3](https://github.com/rootless-dev/aegis/compare/v0.0.2...v0.0.3) (2026-08-23)
+
+
+### Features
+
+* **app:** open the database at boot and report it in readiness ([31669e2](https://github.com/rootless-dev/aegis/commit/31669e2dcbb6bc31c7efdc299a1f6e608117af60))
+* **app:** wire TLS, certificate rotation and proxy trust ([28cd4fa](https://github.com/rootless-dev/aegis/commit/28cd4fa4b4d5feff7ab894180d4f624515b6a9f6))
+* **certs:** serve TLS certificates from memory or rotating files ([6f3e1ad](https://github.com/rootless-dev/aegis/commit/6f3e1add20414897553726f162c8a090915f8b8a))
+* **config:** add execution profiles and declare the TLS topology ([0746ddb](https://github.com/rootless-dev/aegis/commit/0746ddb3272a0d81cdb4cf853f60ec1111ce3d6f))
+* **config:** add the database section ([00bc70d](https://github.com/rootless-dev/aegis/commit/00bc70d2a77552d4d5ff07a3f8da7f0fe64e96a2))
+* connect aegis to the customer's database ([c00a70d](https://github.com/rootless-dev/aegis/commit/c00a70d03849ef2b96df50331268f47466921e08))
+* **database:** add the connection factory for the four engines ([bb47d32](https://github.com/rootless-dev/aegis/commit/bb47d32cd07435f53e9449f5468d423440c1b412))
+* **dev:** run the orchestrated loops against postgres ([6b5e634](https://github.com/rootless-dev/aegis/commit/6b5e634842a6ef2b44126766da88b5e89cd056a8))
+* **health:** describe each readiness check and log what fails ([a17bfc8](https://github.com/rootless-dev/aegis/commit/a17bfc81533e2d0afd7c8f0f2abbf523282f44b9))
+* **http:** resolve the client scheme and address behind a gateway ([2248154](https://github.com/rootless-dev/aegis/commit/2248154c4dc9a1e22b08837acbb902a108d30681))
+* **http:** serve TLS from the server ([b1bf1db](https://github.com/rootless-dev/aegis/commit/b1bf1db61bd024fd5b880b71814cd6443733280a))
+* TLS termination, execution profiles and proxy awareness ([63c18bd](https://github.com/rootless-dev/aegis/commit/63c18bdc98d00a1dcaac18e002317ffaceb1aa7d))
+
+
+### Documentation
+
+* document profiles, TLS termination and proxy trust ([c7dfd2b](https://github.com/rootless-dev/aegis/commit/c7dfd2b3fe5ac7bc245d8810eeb8185a794d9ca9))
+* document the database section and the database in the loop ([6cd539c](https://github.com/rootless-dev/aegis/commit/6cd539c195de9af473467d5357a99c20214bb151))
+* **plan:** keep the design and the plan behind the database layer ([5fe5ec2](https://github.com/rootless-dev/aegis/commit/5fe5ec27bd50d5cd488489fccfb7a644ca2a35c2))
+
 ## [0.0.2](https://github.com/rootless-dev/aegis/compare/v0.0.1...v0.0.2) (2026-08-19)
 
 
