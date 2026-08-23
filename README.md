@@ -18,8 +18,8 @@ Tilt workflows.
 ## Quick start
 
 ```sh
-make run    # run from source
-make dev    # hot reload and a debugger, in a container
+make run    # run from source, on sqlite
+make dev    # hot reload and a debugger, in containers, on postgres
 make ci     # everything the pipeline runs
 make        # every target, grouped
 ```
