@@ -5,6 +5,7 @@ import (
 
 	"github.com/rootless-dev/aegis/internal/http/server"
 	"github.com/rootless-dev/aegis/internal/infra/certs"
+	"github.com/rootless-dev/aegis/internal/infra/database"
 	"github.com/rootless-dev/aegis/internal/infra/graceful"
 	"github.com/rootless-dev/aegis/internal/infra/health"
 	"github.com/rootless-dev/aegis/internal/infra/logging"
@@ -42,7 +43,53 @@ func (app *Application) setHealth() error {
 		Logger:       app.logger,
 		CheckTimeout: app.cfg.Health.CheckTimeout,
 		DrainDelay:   app.cfg.Health.DrainDelay,
+		// A readiness failure carries the address and the driver behind it,
+		// which is help during development and topology on a public endpoint.
+		RevealErrors: app.cfg.Profile.IsDev(),
 	})
+
+	return nil
+}
+
+// setDatabase opens the pool and registers the readiness check. Liveness never
+// runs it: a slow database would otherwise fail every replica at once and have
+// all of them restarted, turning a degradation into an outage.
+func (app *Application) setDatabase() error {
+	cfg := app.cfg.Database
+
+	db, err := database.Open(database.Options{
+		Driver:         database.Driver(cfg.Driver),
+		Host:           cfg.Host,
+		Port:           cfg.Port,
+		Name:           cfg.Name,
+		User:           cfg.User,
+		Password:       cfg.Password,
+		Path:           cfg.Path,
+		SSLMode:        cfg.SSLMode,
+		SSLRootCert:    cfg.SSLRootCert,
+		Options:        cfg.Options,
+		ConnectTimeout: cfg.ConnectTimeout,
+		Pool: database.Pool{
+			MaxOpen:         cfg.Pool.MaxOpen,
+			MaxIdle:         cfg.Pool.MaxIdle,
+			ConnMaxLifetime: cfg.Pool.ConnMaxLifetime,
+			ConnMaxIdleTime: cfg.Pool.ConnMaxIdleTime,
+		},
+		Logger: app.logger,
+		// A query slower than the request timeout has already lost the request
+		// it belonged to, which makes it the natural threshold.
+		SlowThreshold: app.cfg.HttpServer.RequestTimeout,
+		// Query arguments are credentials, tokens and personal data. They are
+		// only rendered outside production.
+		LogParameters: app.cfg.Profile.IsDev(),
+	})
+	if err != nil {
+		return err
+	}
+
+	app.database = db
+
+	app.health.RegisterDetailed("database", db.Probe)
 
 	return nil
 }

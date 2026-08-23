@@ -1,0 +1,119 @@
+# Development only, and deliberately not hardened the way the base is: this is
+# the engine a customer already runs, brought into the loop so the inner cycle
+# talks to the same database production does. Nothing here is a template for
+# deploying a database anywhere real.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aegis-postgres-data
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  replicas: 1
+  # The volume is ReadWriteOnce: a rolling update would leave the new pod
+  # waiting on a claim the old one still holds.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      # The namespace enforces the restricted Pod Security standard, and this
+      # pod is in it like any other. 70 is the postgres user in the alpine
+      # image; fsGroup is what makes the mounted volume writable by it, since
+      # the entrypoint cannot chown anything without root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: postgres
+          # The version the integration matrix and docker-compose use. Three
+          # environments on three versions would prove less than any of them.
+          image: postgres:17-alpine
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          ports:
+            - name: postgres
+              containerPort: 5432
+
+          env:
+            - name: POSTGRES_DB
+              value: aegis
+            - name: POSTGRES_USER
+              value: aegis
+            # The same Secret the application reads, so the credential has one
+            # source here rather than two literals that can drift apart.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aegis-database
+                  key: password
+            # A mounted volume is not empty -- it carries lost+found -- and
+            # initdb refuses to run in a directory that is not. Hence a
+            # subdirectory of the mount rather than the mount itself.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+
+          # pg_isready rather than a TCP probe: the port is open well before
+          # the server finishes initialising, and the application would be told
+          # to connect to a database that is not accepting yet.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "aegis", "-d", "aegis"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "aegis", "-d", "aegis"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: aegis-postgres-data

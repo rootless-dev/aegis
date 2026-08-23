@@ -1,6 +1,7 @@
 package application
 
 import (
+	"context"
 	"errors"
 	"os"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/rootless-dev/aegis/internal/configs"
 	"github.com/rootless-dev/aegis/internal/http/server"
 	"github.com/rootless-dev/aegis/internal/infra/certs"
+	"github.com/rootless-dev/aegis/internal/infra/database"
 	"github.com/rootless-dev/aegis/internal/infra/graceful"
 	"github.com/rootless-dev/aegis/internal/infra/health"
 )
@@ -22,6 +24,7 @@ type Application struct {
 	logger   *log.Logger
 	graceful *graceful.Graceful
 	health   *health.Health
+	database *database.DB
 
 	// router is what the server serves; surfaces is the group carrying the full
 	// middleware chain, and is where each area mounts its own routes so that
@@ -54,6 +57,7 @@ func New(cfg *configs.Application) (*Application, error) {
 		instance.setLogger,
 		instance.setGraceful,
 		instance.setHealth,
+		instance.setDatabase,
 		instance.setCertificates,
 		instance.setRouter,
 		instance.setHttpServer,
@@ -61,11 +65,27 @@ func New(cfg *configs.Application) (*Application, error) {
 
 	for _, step := range steps {
 		if err := step(); err != nil {
+			// A step failing after setDatabase leaves an open pool nobody can
+			// reach: New returns no Application, so the caller has nothing left
+			// to call Shutdown on. Shutdown is a no-op when the database was
+			// never opened, which is every step before it.
+			_ = instance.Shutdown(context.Background())
+
 			return nil, err
 		}
 	}
 
 	return instance, nil
+}
+
+// Shutdown releases what New acquired. Run goes through graceful instead, which
+// orders every resource.
+func (app *Application) Shutdown(ctx context.Context) error {
+	if app.database == nil {
+		return nil
+	}
+
+	return app.database.Shutdown(ctx)
 }
 
 // Run starts the application resources and blocks until shutdown is requested,
@@ -77,16 +97,22 @@ func (app *Application) Run() error {
 
 	build := buildinfo.Read()
 
+	// The identity of the process and nothing else: every resource announces
+	// what it resolved on its own, at the point it resolved it.
 	app.logger.Info().
 		Str("name", app.cfg.AppName).
 		Str("profile", app.cfg.Profile.String()).
 		Str("public_url", app.cfg.PublicURL).
-		Str("tls_termination", app.cfg.TLS.Termination.String()).
 		Str("version", build.Version).
 		Str("revision", build.ShortRevision()).
 		Str("built_at", build.Time).
 		Bool("dirty", build.Modified).
 		Msg("application started")
+
+	// Registered before the resources and therefore resolved after them:
+	// pendings run in reverse, and nothing may be closed while a request can
+	// still reach it.
+	app.graceful.Register("database", app.database.Shutdown)
 
 	for _, resource := range app.resources() {
 		app.registerResource(resource)

@@ -50,9 +50,18 @@ docker_build_with_restart(
 # and the replica count. Production deploys the base.
 k8s_yaml(kustomize('deploy/k8s/overlays/dev'))
 
+# The loop talks to the engine a customer runs. Postgres comes up first: the
+# application connects during New and fails the boot if the server is not
+# reachable, so starting them together would just crash-loop until it is.
+k8s_resource(
+    'postgres',
+    port_forwards=['5432:5432'],
+    labels=['db'],
+)
+
 k8s_resource(
     'aegis',
     port_forwards=['7500:7500'],
-    resource_deps=['compile'],
+    resource_deps=['compile', 'postgres'],
     labels=['app'],
 )

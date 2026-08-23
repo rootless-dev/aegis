@@ -31,6 +31,7 @@ type Application struct {
 	TLS        *TLS        `yaml:"tls"`
 	Proxy      *Proxy      `yaml:"proxy"`
 	HSTS       *HSTS       `yaml:"hsts"`
+	Database   *Database   `yaml:"database"`
 }
 
 // Default is the base layer every other configuration source writes over.
@@ -53,6 +54,7 @@ func Default() *Application {
 		TLS:        defaultTLS(),
 		Proxy:      defaultProxy(),
 		HSTS:       defaultHSTS(),
+		Database:   defaultDatabase(),
 	}
 }
 
@@ -73,12 +75,20 @@ func (cfg *Application) Normalize() {
 		cfg.Proxy.Headers = ForwardedHeaders(strings.ToLower(strings.TrimSpace(string(cfg.Proxy.Headers))))
 	}
 
+	if cfg.Database != nil {
+		cfg.Database.Driver = Driver(strings.ToLower(strings.TrimSpace(cfg.Database.Driver.String())))
+	}
+
 	if !cfg.Profile.IsDev() {
 		return
 	}
 
 	if cfg.TLS != nil {
 		cfg.TLS.normalizeForDevelopment()
+	}
+
+	if cfg.Database != nil {
+		cfg.Database.normalizeForDevelopment()
 	}
 
 	if cfg.PublicURL == "" && cfg.HttpServer != nil {
@@ -106,6 +116,7 @@ func (cfg *Application) sections() []section {
 		{"tls", cfg.TLS == nil, func() error { return cfg.TLS.Validate(cfg.Profile) }},
 		{"proxy", cfg.Proxy == nil, func() error { return cfg.Proxy.Validate(cfg.behindGateway()) }},
 		{"hsts", cfg.HSTS == nil, func() error { return cfg.HSTS.Validate() }},
+		{"database", cfg.Database == nil, func() error { return cfg.Database.Validate(cfg.Profile) }},
 	}
 }
 

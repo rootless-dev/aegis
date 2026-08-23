@@ -22,6 +22,16 @@ func newHealth(checkTimeout, drainDelay time.Duration) *health.Health {
 	})
 }
 
+// revealingHealth is the development profile, where the failure itself is part
+// of the report.
+func revealingHealth() *health.Health {
+	return health.New(health.Options{
+		Logger:       &log.Logger{Writer: log.IOWriter{Writer: io.Discard}},
+		CheckTimeout: time.Second,
+		RevealErrors: true,
+	})
+}
+
 func call(t *testing.T, handler http.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -60,7 +70,9 @@ func TestReadinessFailsWhenACheckFails(t *testing.T) {
 	}
 }
 
-func TestPublicReadinessHidesTheDetails(t *testing.T) {
+// Outside development the report says which dependency is down and nothing
+// about where it lives: the endpoint is public.
+func TestPublicReadinessNamesTheCheckButNotTheFailure(t *testing.T) {
 	instance := newHealth(time.Second, 0)
 	instance.Register("database", func(context.Context) error {
 		return errors.New("dial tcp 10.0.3.4:5432: connection refused")
@@ -68,11 +80,106 @@ func TestPublicReadinessHidesTheDetails(t *testing.T) {
 
 	body := call(t, instance.Ready()).Body.String()
 
-	// The public endpoint would otherwise hand internal topology to anyone.
-	for _, leaked := range []string{"database", "10.0.3.4", "connection refused"} {
+	for _, want := range []string{`"database":{"status":"failed"}`, `"status":"not_ready"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("public readiness should report %s: %s", want, body)
+		}
+	}
+
+	for _, leaked := range []string{"10.0.3.4", "connection refused"} {
 		if strings.Contains(body, leaked) {
 			t.Errorf("public readiness leaked %q: %s", leaked, body)
 		}
+	}
+}
+
+// Development is where the failure itself is worth more than the topology it
+// describes.
+func TestDevelopmentReadinessRevealsTheFailure(t *testing.T) {
+	instance := revealingHealth()
+	instance.Register("database", func(context.Context) error {
+		return errors.New("dial tcp 10.0.3.4:5432: connection refused")
+	})
+
+	body := call(t, instance.Ready()).Body.String()
+
+	for _, want := range []string{"database", "10.0.3.4", "connection refused"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("development readiness should report %q: %s", want, body)
+		}
+	}
+}
+
+// A healthy dependency is named too, or a 200 could not be told apart from one
+// answered by an instance with no checks registered at all.
+func TestReadinessNamesAHealthyCheck(t *testing.T) {
+	instance := newHealth(time.Second, 0)
+	instance.Register("database", func(context.Context) error { return nil })
+
+	body := call(t, instance.Ready()).Body.String()
+
+	if !strings.Contains(body, `"database":{"status":"ok"}`) {
+		t.Errorf("expected the healthy check to be named: %s", body)
+	}
+}
+
+// A detailed check describes what it reached, and that description is for
+// development only: it names the server the same way an error would.
+func TestDetailsAreRenderedOnlyWhereErrorsAre(t *testing.T) {
+	details := func(context.Context) (map[string]string, error) {
+		return map[string]string{"host": "db.internal", "pool_open": "3"}, nil
+	}
+
+	public := call(t, newHealth(time.Second, 0).RegisterDetailed("database", details).Ready()).Body.String()
+
+	if strings.Contains(public, "db.internal") {
+		t.Errorf("public readiness leaked the server it reached: %s", public)
+	}
+
+	if !strings.Contains(public, `"database":{"status":"ok"}`) {
+		t.Errorf("public readiness should still report the verdict: %s", public)
+	}
+
+	development := call(t, revealingHealth().RegisterDetailed("database", details).Ready()).Body.String()
+
+	for _, want := range []string{`"host":"db.internal"`, `"pool_open":"3"`, `"status":"ok"`} {
+		if !strings.Contains(development, want) {
+			t.Errorf("development readiness should report %s: %s", want, development)
+		}
+	}
+}
+
+// A check that fails can still say what it was talking to, which is most of
+// what makes the failure diagnosable.
+func TestAFailingDetailedCheckStillDescribesTheDependency(t *testing.T) {
+	instance := revealingHealth()
+	instance.RegisterDetailed("database", func(context.Context) (map[string]string, error) {
+		return map[string]string{"host": "db.internal"}, errors.New("connection refused")
+	})
+
+	body := call(t, instance.Ready()).Body.String()
+
+	for _, want := range []string{`"status":"failed"`, `"host":"db.internal"`, `"error":"connection refused"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %s in the report: %s", want, body)
+		}
+	}
+}
+
+// Draining runs no checks, so an ordered shutdown is the one not_ready with no
+// checks in it.
+func TestDrainingReportsNoChecks(t *testing.T) {
+	instance := newHealth(time.Second, 0)
+	instance.Register("database", func(context.Context) error { return nil })
+
+	if err := instance.BeginDrain(context.Background()); err != nil {
+		t.Fatalf("draining: %v", err)
+	}
+
+	body := call(t, instance.Ready()).Body.String()
+
+	if strings.Contains(body, "database") {
+		t.Errorf("expected no checks while draining: %s", body)
 	}
 }
 

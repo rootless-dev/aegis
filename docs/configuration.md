@@ -112,6 +112,88 @@ configurable: the only answer that stays right over time is the one the standard
 library keeps current, and a floor pinned in configuration ages into the weakest
 thing this service still accepts.
 
+## Database
+
+`database.driver` is one of `postgres`, `mysql`, `mariadb` or `sqlite`. The
+first three are what customers already run on premises — this is an on-prem
+identity provider, not a hosted one, so the database is whatever the operator
+brought rather than something aegis gets to choose. `sqlite` exists for
+everything else: a local run, a test, a demo, with no server to stand up.
+
+`sqlite` has no default outside the `dev` profile, and validation refuses it
+under `prod` outright — it is a development engine, not a small-deployment
+option, and the two are easy to conflate until a customer actually reaches for
+it in production. The dev profile fills in `driver: sqlite` and a `path` on its
+own, so a local run needs neither.
+
+That fallback is for running the binary by hand. The orchestrated development
+environments — `make dev` and `make tilt` — declare `postgres` instead and bring
+the server up alongside the service, because what differs between the two
+engines is what this service depends on. See
+[Development](development.md#the-database-in-the-loop).
+
+`driver` itself has no default in production, for the same reason
+`tls.termination` does not: only the operator knows which engine they run, and
+a guess here would pick the wrong migration lineage. Forgetting it fails the
+boot with the options spelled out:
+
+```
+invalid configuration: database: driver is required: declare "postgres",
+"mysql" or "mariadb", or run with --dev for a local run on "sqlite"
+```
+
+`database.ssl_mode` takes Postgres' vocabulary — `disable`, `prefer`,
+`require`, `verify-ca`, `verify-full` — for every server-based engine,
+including the two that are not Postgres, so the setting means the same thing
+regardless of which one an installation happens to run. Each dialect
+translates it to whatever its own driver expects.
+
+**It has to be declared outside the `dev` profile.** Left empty it would
+translate to `prefer`, and `prefer` falls back to an unencrypted connection
+without reporting that it did: an installation that meant to be encrypted, and
+got the server's TLS setup subtly wrong, would run in plaintext and look
+healthy. `disable` stays a legitimate answer — a database reached over a
+private network the customer already trusts — but it has to be an answer
+someone gave, not a default nobody saw:
+
+```
+invalid configuration: database: ssl_mode is required under the "prod"
+profile: declare one of [disable prefer require verify-ca verify-full], or
+"disable" if the connection to the database is already private
+``` `require` only encrypts: it
+stops a passive listener on the wire but authenticates nothing, so an active
+attacker who can redirect the connection is not stopped by it. Only
+`verify-ca` and `verify-full` check the server's certificate against
+`database.ssl_root_cert`, which is why that setting is read by those two modes
+and rejected under the other three — a CA nobody checks is a CA that does
+nothing, and an operator who set one would otherwise believe the connection is
+authenticated when it is not.
+
+`database.password` does not exist as a key: writing it in the file fails the
+boot, because `KnownFields` rejects it outright. `DATABASE_PASSWORD` is the
+only route a password can take into this service — a value that *can* live in
+a configuration file eventually does, and that file eventually gets committed.
+
+`database.options` carries whatever is specific to one installation and has no
+environment variable of its own — a map has no natural `KEY=VALUE` shape to
+flatten into, and the file is where an installation's peculiarities already
+live. Whatever aegis depends on for a given driver is forced instead of
+accepted here: setting `sslmode` or `charset` by hand fails the boot rather
+than quietly doing nothing once aegis overwrites it anyway.
+
+For `sqlite` the same rule applies to pragma *names* rather than keys, since
+every pragma is carried as the value of one shared `_pragma` option:
+`foreign_keys`, `busy_timeout` and `journal_mode` are forced and rejected here,
+any other pragma is accepted. Being a map, `options` holds one `_pragma` entry
+and therefore one custom pragma — sqlite is there for a local run, and an
+installation that needs several is not what this key is for.
+
+Nothing migrates yet. The migration runner exists and is tested, but it has no
+caller during startup: there is no `migrate` configuration block, no
+`--skip-migrations` flag and nothing wired into the boot sequence. A reader who
+finds the runner in the code and no way to configure it has not missed
+anything — that wiring is future work, not a gap in this document.
+
 ## Validation
 
 Everything is validated before anything starts, and **every problem is reported
@@ -163,6 +245,20 @@ both sources, because accepting it would silently mean nanoseconds.
 | `hsts.enabled` | `HSTS_ENABLED` | `true` |
 | `hsts.max_age` | `HSTS_MAX_AGE` | `8760h` |
 | `hsts.include_subdomains` | `HSTS_INCLUDE_SUBDOMAINS` | `false` |
+| `database.driver` | `DATABASE_DRIVER` | none, required outside `dev` |
+| `database.host` | `DATABASE_HOST` | empty |
+| `database.port` | `DATABASE_PORT` | empty, the engine's own default |
+| `database.name` | `DATABASE_NAME` | empty |
+| `database.user` | `DATABASE_USER` | empty |
+| — | `DATABASE_PASSWORD` | empty, no file equivalent |
+| `database.path` | `DATABASE_PATH` | empty, `./aegis.dev.db` under `dev` |
+| `database.ssl_mode` | `DATABASE_SSL_MODE` | none, required outside `dev` |
+| `database.ssl_root_cert` | `DATABASE_SSL_ROOT_CERT` | empty |
+| `database.connect_timeout` | `DATABASE_CONNECT_TIMEOUT` | `10s` |
+| `database.pool.max_open` | `DATABASE_POOL_MAX_OPEN` | `25` |
+| `database.pool.max_idle` | `DATABASE_POOL_MAX_IDLE` | `25` |
+| `database.pool.conn_max_lifetime` | `DATABASE_POOL_CONN_MAX_LIFETIME` | `30m` |
+| `database.pool.conn_max_idle_time` | `DATABASE_POOL_CONN_MAX_IDLE_TIME` | `5m` |
 | `graceful.timeout` | `GRACEFUL_SHUTDOWN_TIMEOUT` | `20s` |
 | `health.check_timeout` | `HEALTH_CHECK_TIMEOUT` | `2s` |
 | `health.drain_delay` | `HEALTH_DRAIN_DELAY` | `5s` |

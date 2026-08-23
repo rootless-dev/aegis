@@ -99,6 +99,56 @@ hsts:
   # out on each browser.
   include_subdomains: false
 
+database:
+  # One of: postgres, mysql, mariadb, sqlite. There is no default outside
+  # development: only the operator knows which engine they run, and a guess
+  # here would pick the wrong migration lineage. sqlite is a development
+  # engine and is refused under the prod profile.
+  driver: postgres
+
+  host: db.internal
+  # Left empty, the engine's own default is used: 5432 or 3306.
+  port: "5432"
+  name: aegis
+  user: aegis
+  # The password is deliberately not a key here. Writing it fails the boot;
+  # DATABASE_PASSWORD is the only route, because a secret that can live in a
+  # configuration file eventually gets committed.
+
+  # sqlite only, and only under the dev profile.
+  # path: ./aegis.dev.db
+
+  # One of: disable, prefer, require, verify-ca, verify-full. Postgres'
+  # vocabulary, used for every engine so the setting means the same thing
+  # everywhere. Note that require encrypts without verifying anything: it stops
+  # a passive listener, not an active attacker.
+  #
+  # Required outside the dev profile, and "disable" is a legitimate answer for
+  # a database on a private network: what the boot refuses is leaving it unsaid,
+  # since an empty value means prefer, which quietly accepts plaintext.
+  ssl_mode: verify-full
+  # Only read by the two verify- modes.
+  ssl_root_cert: /etc/aegis/db-ca.pem
+
+  # Anything specific to this installation. Whatever aegis depends on is forced
+  # by the driver and rejected here, so a setting that would break the service
+  # fails the boot instead of quietly doing nothing.
+  options:
+    application_name: aegis
+
+  connect_timeout: 10s
+
+  pool:
+    max_open: 25
+    # Matching max_open on purpose: a smaller idle count makes the pool close
+    # and reopen connections under load, and every reopen pays a TLS handshake.
+    max_idle: 25
+    # Stays under the NAT and firewall idle timeouts that commonly drop
+    # connections around an hour. Without it the symptom is a sporadic
+    # "invalid connection" with no visible cause.
+    conn_max_lifetime: 30m
+    conn_max_idle_time: 5m
+
 graceful:
   # Whole shutdown budget, shared by every pending. Must fit the window the
   # orchestrator allows between SIGTERM and SIGKILL.

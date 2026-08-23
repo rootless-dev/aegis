@@ -37,6 +37,32 @@ spec:
             - name: PUBLIC_URL
               value: "https://localhost:7500"
 
+            # The loop runs against the engine a customer runs, not against
+            # sqlite: what breaks between the two -- concurrent writes, locking,
+            # types, transactional DDL -- is exactly what this service is going
+            # to depend on. Running the binary by hand still falls back to
+            # sqlite, which is the shortcut for seeing it up rather than for
+            # developing against it.
+            #
+            # DATABASE_PASSWORD is left to the base, which reads the Secret this
+            # overlay generates.
+            - name: DATABASE_DRIVER
+              value: postgres
+            - name: DATABASE_HOST
+              value: postgres
+            - name: DATABASE_NAME
+              value: aegis
+            - name: DATABASE_USER
+              value: aegis
+            # Declared rather than left empty: an empty mode means "prefer",
+            # which falls back to an unencrypted connection without saying so.
+            # Inside the cluster, on a database this same overlay creates, that
+            # is the deliberate answer.
+            - name: DATABASE_SSL_MODE
+              value: disable
+            - name: DATABASE_SSL_ROOT_CERT
+              value: ""
+
           # Probes have to follow: the listener no longer speaks plain HTTP. The
           # kubelet does not verify the certificate it is offered, which is what
           # makes a self-signed one workable here.

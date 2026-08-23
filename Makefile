@@ -70,7 +70,7 @@ fmt-check: ## Fail if any file is not gofmt'd
 .PHONY: vet
 vet: ## Run go vet, including the integration tagged files
 	go vet ./...
-	go vet -tags=integration ./test/...
+	go vet -tags=integration ./internal/... ./test/...
 
 # -coverpkg spans every package: without it a package is only credited for what
 # its own tests execute, so code used across a boundary — the response writers,
@@ -80,8 +80,15 @@ test: ## Run the unit tests with the race detector
 	go test -race -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE) ./...
 
 .PHONY: test-integration
-test-integration: ## Run the integration tests against the compiled binary
-	go test -tags=integration -timeout=5m ./test/integration/...
+test-integration: ## Run the integration tests, against sqlite by default
+	go test -tags=integration -timeout=15m ./internal/... ./test/integration/...
+
+.PHONY: test-integration-all
+test-integration-all: ## Run the integration tests against every supported engine
+	@for driver in sqlite postgres mysql mariadb; do \
+		echo "== $$driver =="; \
+		AEGIS_TEST_DRIVER=$$driver go test -tags=integration -timeout=15m ./internal/... ./test/integration/... || exit 1; \
+	done
 
 .PHONY: cover
 cover: test ## Show coverage per function
@@ -151,11 +158,11 @@ image-run: image ## Run the production image locally
 ##@ Development environment
 
 .PHONY: dev
-dev: ## Start the development server with hot reload and delve on 2345
+dev: ## Start the development server with hot reload and delve on 2345, against postgres
 	docker compose up --build
 
 .PHONY: dev-down
-dev-down: ## Stop the development environment
+dev-down: ## Stop the development environment, keeping the database
 	docker compose down
 
 .PHONY: dev-logs

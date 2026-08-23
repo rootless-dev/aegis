@@ -61,9 +61,13 @@ jobs:
           path: coverage.out
           retention-days: 7
 
-  build:
-    name: Build
+  engines:
+    name: Engine (${{ matrix.database }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres, mysql, mariadb]
     steps:
       - uses: actions/checkout@v7
 
@@ -76,19 +80,56 @@ jobs:
         run: go build -o bin/aegisd ./cmd/server
 
       # The binary has to survive a boot with no environment at all, which is
-      # what catches a default that stopped being valid.
-      # Compiles the binary and runs it: boot on defaults, the shutdown
-      # ordering, and a refused boot on invalid configuration. None of that is
-      # reachable from the unit tests, which build the configuration by hand
-      # and never go through main.
+      # what catches a default that stopped being valid. Compiles the binary
+      # and runs it: boot on defaults, the shutdown ordering, and a refused
+      # boot on invalid configuration. None of that is reachable from the unit
+      # tests, which build the configuration by hand and never go through
+      # main.
+      #
+      # Four engines, because a customer runs whichever one they already
+      # operate. Collation, isolation level and DDL transactionality differ
+      # between them, and this matrix is the only place that difference is
+      # exercised.
       - name: Integration tests
-        run: go test -tags=integration -timeout=5m ./test/integration/...
+        env:
+          AEGIS_TEST_DRIVER: ${{ matrix.database }}
+        run: go test -tags=integration -timeout=15m ./internal/... ./test/integration/...
 
       - uses: actions/upload-artifact@v7
         with:
-          name: aegisd
+          # Suffixed per matrix leg: the step above now runs once per engine,
+          # and an unsuffixed name would collide across them.
+          name: aegisd-${{ matrix.database }}
           path: bin/aegisd
           retention-days: 7
+
+  # The name branch protection requires. A matrix reports one context per leg,
+  # so requiring the matrix job by name means editing the repository settings
+  # every time an engine joins or leaves it — and until someone does, the
+  # required context never arrives and the pull request stays blocked with
+  # everything green. This job is that stable name, and the matrix is free to
+  # grow underneath it.
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: engines
+    # Without always(), a failing leg leaves this skipped rather than failed,
+    # and a required context that is skipped never reports at all — the exact
+    # state this job exists to avoid.
+    if: always()
+    steps:
+      - name: Check the engine matrix
+        # result is the aggregate of every leg: success only when all of them
+        # succeeded, which is what the required context has to mean.
+        run: |
+          result="${{ needs.engines.result }}"
+
+          if [ "$result" != "success" ]; then
+            echo "The engine matrix did not pass: $result"
+            exit 1
+          fi
+
+          echo "Every engine passed."
 
   gosec:
     name: Security (gosec)

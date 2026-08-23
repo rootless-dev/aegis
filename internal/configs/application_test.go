@@ -80,6 +80,7 @@ func publicURLConfig(url string, termination configs.Termination) *configs.Appli
 	cfg := configs.Default()
 	cfg.PublicURL = url
 	cfg.TLS.Termination = termination
+	cfg.Database = serverDatabase()
 
 	switch termination {
 	case configs.TerminationApp:
