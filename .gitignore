@@ -18,7 +18,15 @@ aegisd
 *.out
 coverage.*
 
+# The sqlite database the dev profile creates, and the sidecars WAL mode adds.
+*.dev.db
+*.dev.db-shm
+*.dev.db-wal
+
 # Editors
 .idea/
 .vscode/
 .DS_Store
+
+# Scratch directory for subagent-driven execution: ledger, briefs and review packages.
+.superpowers/
