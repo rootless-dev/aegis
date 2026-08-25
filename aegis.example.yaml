@@ -56,8 +56,9 @@ tls:
   #   none   plain HTTP with nothing in front, or a service mesh doing
   #          transparent mTLS; forwarded headers are ignored
   #
-  # Under the dev profile this defaults to app, and the certificate is generated
-  # in memory at every boot.
+  # Under the dev profile this defaults to none: a local run is plain HTTP and
+  # needs nothing configured. Setting it to app there serves HTTPS from a
+  # certificate generated at boot, with no key pair to provide.
   termination: proxy
 
   # PEM encoded, and only for termination "app". Java keystores are not read:
@@ -98,6 +99,14 @@ hsts:
   # nothing about, and cannot be taken back before the announced max age runs
   # out on each browser.
   include_subdomains: false
+
+csp:
+  # The Content-Security-Policy sent with every HTML page. The policy itself is
+  # not configurable: one pinned in a file ages into the weakest thing this
+  # service still allows. This switch is for local debugging.
+  #
+  # The other security headers are always sent and have no switch.
+  enabled: true
 
 database:
   # One of: postgres, mysql, mariadb, sqlite. There is no default outside
