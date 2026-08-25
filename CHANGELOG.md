@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.0.4](https://github.com/rootless-dev/aegis/compare/v0.0.3...v0.0.4) (2026-08-25)
+
+
+### Features
+
+* default the development profile to plain HTTP ([f9d8cb1](https://github.com/rootless-dev/aegis/commit/f9d8cb1d1769475f2c1b02fb1b0db007ba52a19b))
+* render pages from templates embedded in the binary ([2ffc25b](https://github.com/rootless-dev/aegis/commit/2ffc25b70e488cc51755add8178ccddc810bc0c7))
+* serve the HTML surface from the binary ([f8af6b7](https://github.com/rootless-dev/aegis/commit/f8af6b770002ce777e916527201ba8609e0aecf3))
+* serve the page surface beside the JSON one ([0e6a774](https://github.com/rootless-dev/aegis/commit/0e6a774d8e8778357894290105d78e30e446a487))
+
+
+### Documentation
+
+* describe the page surface, the asset pipeline and the plain HTTP default ([d0ccb0e](https://github.com/rootless-dev/aegis/commit/d0ccb0ed9594a036d14e7548127e60f5553580c8))
+
 ## [0.0.3](https://github.com/rootless-dev/aegis/compare/v0.0.2...v0.0.3) (2026-08-23)
 
 
