@@ -10,6 +10,8 @@ import (
 	"github.com/rootless-dev/aegis/internal/banner"
 	"github.com/rootless-dev/aegis/internal/buildinfo"
 	"github.com/rootless-dev/aegis/internal/configs"
+	"github.com/rootless-dev/aegis/internal/handler/page"
+	"github.com/rootless-dev/aegis/internal/http/assets"
 	"github.com/rootless-dev/aegis/internal/http/server"
 	"github.com/rootless-dev/aegis/internal/infra/certs"
 	"github.com/rootless-dev/aegis/internal/infra/database"
@@ -31,6 +33,13 @@ type Application struct {
 	// adding an endpoint never means editing the assembly.
 	router   chi.Router
 	surfaces chi.Router
+
+	// pages is the surface a browser reaches: the same base chain as the API
+	// group, plus the security headers, and a recoverer that answers HTML.
+	pages chi.Router
+
+	assets *assets.Server
+	page   *page.Handler
 
 	// certificates is nil whenever TLS ends somewhere else, which is what tells
 	// the server to listen in plain HTTP. Assigning a typed nil pointer to it
@@ -59,6 +68,7 @@ func New(cfg *configs.Application) (*Application, error) {
 		instance.setHealth,
 		instance.setDatabase,
 		instance.setCertificates,
+		instance.setWeb,
 		instance.setRouter,
 		instance.setHttpServer,
 	}

@@ -31,6 +31,7 @@ type Application struct {
 	TLS        *TLS        `yaml:"tls"`
 	Proxy      *Proxy      `yaml:"proxy"`
 	HSTS       *HSTS       `yaml:"hsts"`
+	CSP        *CSP        `yaml:"csp"`
 	Database   *Database   `yaml:"database"`
 }
 
@@ -54,6 +55,7 @@ func Default() *Application {
 		TLS:        defaultTLS(),
 		Proxy:      defaultProxy(),
 		HSTS:       defaultHSTS(),
+		CSP:        defaultCSP(),
 		Database:   defaultDatabase(),
 	}
 }
@@ -116,6 +118,7 @@ func (cfg *Application) sections() []section {
 		{"tls", cfg.TLS == nil, func() error { return cfg.TLS.Validate(cfg.Profile) }},
 		{"proxy", cfg.Proxy == nil, func() error { return cfg.Proxy.Validate(cfg.behindGateway()) }},
 		{"hsts", cfg.HSTS == nil, func() error { return cfg.HSTS.Validate() }},
+		{"csp", cfg.CSP == nil, func() error { return cfg.CSP.Validate() }},
 		{"database", cfg.Database == nil, func() error { return cfg.Database.Validate(cfg.Profile) }},
 	}
 }

@@ -21,6 +21,7 @@ func applyEnv(cfg *configs.Application) {
 	applyTLS(cfg.TLS)
 	applyProxy(cfg.Proxy)
 	applyHSTS(cfg.HSTS)
+	applyCSP(cfg.CSP)
 	applyGraceful(cfg.Graceful)
 	applyHealth(cfg.Health)
 	applyBanner(cfg.Banner)
@@ -86,6 +87,14 @@ func applyHSTS(cfg *configs.HSTS) {
 	fromEnv(&cfg.Enabled, "HSTS_ENABLED")
 	fromEnv(&cfg.IncludeSubdomains, "HSTS_INCLUDE_SUBDOMAINS")
 	durationFromEnv(&cfg.MaxAge, "HSTS_MAX_AGE")
+}
+
+func applyCSP(cfg *configs.CSP) {
+	if cfg == nil {
+		return
+	}
+
+	fromEnv(&cfg.Enabled, "CSP_ENABLED")
 }
 
 func applyGraceful(cfg *configs.Graceful) {

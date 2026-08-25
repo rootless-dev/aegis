@@ -37,6 +37,12 @@ func WriteServerError(w http.ResponseWriter) {
 	WriteError(w, http.StatusInternalServerError, Error{Code: ErrorServerError})
 }
 
+// ServerError is WriteServerError in the shape the recoverer takes; the request
+// is in the signature because the HTML writer needs it.
+func ServerError(w http.ResponseWriter, _ *http.Request) {
+	WriteServerError(w)
+}
+
 // WriteJSON sets no cache headers of its own: discovery and JWKS are meant to
 // be cached, so endpoints that must not be set no-store themselves.
 //
