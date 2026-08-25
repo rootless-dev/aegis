@@ -71,8 +71,7 @@ func (i *instance) url(path string) string {
 // deliberately minimal environment plus env: anything inherited from the
 // developer shell — or a .env picked up by the autoload — would make the run
 // depend on the machine. It always talks plain HTTP; the one caller that needs
-// TLS (the development profile, which mints its own certificate) goes through
-// launch directly.
+// TLS (dev opting into termination "app") goes through launch directly.
 func startBinary(t *testing.T, env []string) *instance {
 	t.Helper()
 

@@ -1,0 +1,177 @@
+{{define "content"}}
+<main>
+
+  <section class="hero">
+    <div class="shell hero__grid">
+      <div>
+        <p class="label eyebrow enter">{{.Tagline}}</p>
+        <h1 class="hero__title enter enter--2">Identity that <span class="mark">never leaves</span> your network.</h1>
+        <p class="hero__deck enter enter--3">
+          Aegis is a multi-tenant identity provider you run yourself. One static
+          binary, your database, and no call to anyone else's servers &mdash;
+          including from the pages it puts in front of a password field.
+        </p>
+        <div class="actions enter enter--3">
+          <a class="button button--solid" href="https://github.com/rootless-dev/aegis">
+            Read the source
+            {{template "arrow"}}
+          </a>
+          <a class="button button--outline" href="#state">See where it stands</a>
+        </div>
+      </div>
+
+      <aside class="receipt enter enter--4" aria-labelledby="receipt-title">
+        <div class="receipt__head">
+          <h2 class="label" id="receipt-title">This page, itemised</h2>
+        </div>
+        <ul class="ledger">
+          <li class="ledger__row">
+            <span class="ledger__count">0</span>
+            <span class="ledger__item">requests to another origin</span>
+          </li>
+          <li class="ledger__row">
+            <span class="ledger__count">0</span>
+            <span class="ledger__item">bytes of JavaScript</span>
+          </li>
+          <li class="ledger__row">
+            <span class="ledger__count">0</span>
+            <span class="ledger__item">web fonts pulled off the network</span>
+          </li>
+          <li class="ledger__row">
+            <span class="ledger__count">1</span>
+            <span class="ledger__item">stylesheet, served from the binary</span>
+          </li>
+        </ul>
+        <p class="receipt__note">
+          Open the network tab and count them. An identity provider installed
+          on a closed network cannot reach a CDN, and one that could still
+          should not.
+        </p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="band" id="state">
+    <div class="shell">
+      <div class="band__head">
+        <p class="label eyebrow">Status</p>
+        <h2 class="band__title">The service runs. The identity domain is not written yet.</h2>
+        <p class="band__deck">
+          Aegis is early, and this page would rather say so than imply otherwise.
+          Here is the whole of it, split the only way that matters.
+        </p>
+      </div>
+
+      <div class="state">
+        <div>
+          <h3 class="label state__title state__title--done">Working today</h3>
+          <ul class="state__list">
+            <li>{{template "tick"}}<span>Configuration in four layers: defaults, file, environment, flags</span></li>
+            <li>{{template "tick"}}<span>TLS terminated in the process, at a proxy, or not at all</span></li>
+            <li>{{template "tick"}}<span>Postgres, MySQL and SQLite behind one migration runner</span></li>
+            <li>{{template "tick"}}<span>Liveness and readiness, and a shutdown that drains</span></li>
+            <li>{{template "tick"}}<span>Server-rendered pages under a policy that allows no inline anything</span></li>
+          </ul>
+        </div>
+        <div>
+          <h3 class="label state__title state__title--pending">Not yet</h3>
+          <ul class="state__list state__list--pending">
+            <li>{{template "dash"}}<span>Realms, users and credentials</span></li>
+            <li>{{template "dash"}}<span>Token issuance, OAuth 2.0 and OpenID Connect</span></li>
+            <li>{{template "dash"}}<span>The admin API, and the console that consumes it</span></li>
+            <li>{{template "dash"}}<span>Browser sessions and the login screens around them</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band--raised">
+    <div class="shell">
+      <div class="band__head">
+        <p class="label eyebrow">Build</p>
+        <h2 class="band__title">Three decisions you inherit on the day you install it.</h2>
+        <p class="band__deck">
+          On-premises software is judged by what it drags in behind it. These are
+          the constraints Aegis holds, and what each one costs.
+        </p>
+      </div>
+
+      <div class="plates">
+        <article class="plate-card">
+          <p class="label plate-card__index">Binary</p>
+          <h3 class="plate-card__title">One file, and no shell beside it</h3>
+          <p class="plate-card__body">
+            Built with cgo off and shipped on a distroless base, so the image
+            carries the service, its templates and nothing to exec into. Copy it
+            in, point it at a config file, run it.
+          </p>
+        </article>
+        <article class="plate-card">
+          <p class="label plate-card__index">Storage</p>
+          <h3 class="plate-card__title">Your database, under your DBA</h3>
+          <p class="plate-card__body">
+            Postgres, MySQL and SQLite are all first class, and the migrations
+            travel inside the binary rather than in a sidecar job. Nobody has to
+            grant an outside service a schema it owns.
+          </p>
+        </article>
+        <article class="plate-card">
+          <p class="label plate-card__index">Frontend</p>
+          <h3 class="plate-card__title">No npm anywhere in the build</h3>
+          <p class="plate-card__body">
+            Pages are html/template from the standard library, with contextual
+            escaping doing the work. Styles come from a single checksummed
+            Tailwind binary. There is no dependency tree to audit.
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="shell start">
+      <div class="band__head">
+        <p class="label eyebrow">Run it</p>
+        <h2 class="band__title">Go 1.26, and about a minute.</h2>
+        <p class="band__deck">
+          The development profile serves plain HTTP on port 7500 and stores in
+          SQLite, so nothing else has to be running first.
+        </p>
+      </div>
+
+      <div class="terminal">
+        <div class="terminal__bar">
+          <span class="label">Shell</span>
+          <span class="label">development profile</span>
+        </div>
+        <pre class="terminal__body"><code><span class="terminal__prompt">$ </span>git clone https://github.com/rootless-dev/aegis
+<span class="terminal__prompt">$ </span>cd aegis
+<span class="terminal__prompt">$ </span>make run
+
+<span class="terminal__comment"># listening on http://localhost:7500</span></code></pre>
+      </div>
+    </div>
+  </section>
+
+</main>
+{{end}}
+
+{{define "arrow"}}
+<svg class="button__arrow" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" aria-hidden="true" focusable="false">
+  <path d="M2.6 9.4 9.4 2.6"/>
+  <path d="M4.2 2.6h5.2v5.2"/>
+</svg>
+{{end}}
+
+{{define "tick"}}
+<svg class="state__bullet state__bullet--done" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true" focusable="false">
+  <path d="M1.8 6.3 4.6 9 10.2 2.8"/>
+</svg>
+{{end}}
+
+{{define "dash"}}
+<svg class="state__bullet state__bullet--pending" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true" focusable="false">
+  <path d="M1.8 6h8.4"/>
+</svg>
+{{end}}

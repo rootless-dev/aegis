@@ -1,0 +1,57 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{.Title}}</title>
+<link rel="icon" href="{{asset "favicon.svg"}}" type="image/svg+xml">
+<link rel="stylesheet" href="{{asset "css/app.css"}}">
+</head>
+<body>
+{{template "masthead" .}}
+{{template "content" .}}
+{{template "footer" .}}
+</body>
+</html>
+{{end}}
+
+{{/* Here rather than in a page: every page gets them, the error page included,
+     and neither reads a field from the model. */}}
+
+{{define "masthead"}}
+<header class="masthead">
+  <div class="shell masthead__inner">
+    <a class="wordmark" href="/" aria-label="Aegis, home">
+      {{template "lamellae"}}
+      <span class="label wordmark__text">Aegis</span>
+    </a>
+    <nav class="masthead__nav" aria-label="Project">
+      <a class="label masthead__link" href="https://github.com/rootless-dev/aegis/tree/main/docs">Docs</a>
+      <a class="label masthead__link" href="https://github.com/rootless-dev/aegis/blob/main/docs/roadmap.md">Roadmap</a>
+      <a class="label masthead__link" href="https://github.com/rootless-dev/aegis">Source</a>
+    </nav>
+  </div>
+</header>
+{{end}}
+
+{{define "footer"}}
+<footer class="footer">
+  <div class="shell footer__inner">
+    <span class="label">Aegis &middot; MIT</span>
+    <nav class="footer__nav" aria-label="Project">
+      <a class="label" href="https://github.com/rootless-dev/aegis">Source</a>
+      <a class="label" href="https://github.com/rootless-dev/aegis/blob/main/docs/architecture.md">Architecture</a>
+      <a class="label" href="https://github.com/rootless-dev/aegis/blob/main/docs/deployment.md">Deployment</a>
+    </nav>
+  </div>
+</footer>
+{{end}}
+
+{{define "lamellae"}}
+<svg class="wordmark__glyph" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true" focusable="false">
+  <path d="M1.5 6.5 9 2.2l7.5 4.3"/>
+  <path d="M1.5 10.7 9 6.4l7.5 4.3"/>
+  <path d="M1.5 14.9 9 10.6l7.5 4.3"/>
+</svg>
+{{end}}

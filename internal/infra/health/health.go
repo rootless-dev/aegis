@@ -35,6 +35,7 @@ const (
 // keeps the infrastructure free of any dependency on the router in use.
 type Router interface {
 	Get(pattern string, handler http.HandlerFunc)
+	Head(pattern string, handler http.HandlerFunc)
 }
 
 // Check reports whether a dependency is usable. It must honor the context,
@@ -109,9 +110,18 @@ func (h *Health) RegisterDetailed(name string, fn DetailedCheck) *Health {
 // Mount registers the probes. They belong outside the shared middleware chain:
 // the orchestrator hits them every few seconds per replica, which would bury
 // the real traffic in the request log.
+//
+// HEAD sits next to each GET because the router matches by method: a probe
+// asking for the headers alone would otherwise get a 405, which a load balancer
+// reads as the instance being down.
 func (h *Health) Mount(router Router) {
-	router.Get(LivenessPath, h.Live())
-	router.Get(ReadinessPath, h.Ready())
+	live, ready := h.Live(), h.Ready()
+
+	router.Get(LivenessPath, live)
+	router.Head(LivenessPath, live)
+
+	router.Get(ReadinessPath, ready)
+	router.Head(ReadinessPath, ready)
 }
 
 // Live answers whether the process is able to serve at all. It deliberately

@@ -1,0 +1,622 @@
+/* The CLI's input, outside assets/ so it is never served.
+
+   source(none) turns off v4's automatic content detection: left on, the scan
+   walks the working directory and picks up incidental word matches from Go
+   source and docs, so the output would depend on where the CLI was invoked
+   from. The explicit sources below are what make the build reproducible. */
+@import "tailwindcss" source(none);
+
+@source "../layouts/**/*.gohtml";
+@source "../pages/**/*.gohtml";
+@source "../partials/**/*.gohtml";
+
+/* Tailwind is here for the preflight reset and the build pipeline; the pages
+   are written against the semantic classes below rather than utilities.
+
+   Plain custom properties rather than a @theme block: nothing generates
+   utilities from them, and @theme would put their emission at the mercy of
+   Tailwind's tree shaking. */
+:root {
+	--porcelain: #eff3f1;
+	--plate: #ffffff;
+	--ink: #131c1a;
+	--ink-soft: #4a5a56;
+	/* Two values: no single grey clears 4.5:1 on both the porcelain surfaces
+	   and the ink one. */
+	--dim: #5c6d68;
+	--dim-lit: #93a49f;
+	--patina: #1f5e52;
+	--patina-wash: #dbe8e4;
+	--bronze: #8f5420;
+	/* Lifted for the dark surface: #8f5420 on ink barely clears AA. */
+	--bronze-lit: #e2a468;
+	--rule: #d2ddd9;
+	--rule-dark: #2a3a36;
+
+	--display: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+		Arial, sans-serif;
+	/* No @font-face: the policy sends no font-src, and an on-premises install
+	   has no route to a font host. */
+	--mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+		"Liberation Mono", monospace;
+
+	--gutter: clamp(1.25rem, 4vw, 3rem);
+	--measure: 76rem;
+
+	color-scheme: light;
+}
+
+@layer base {
+	html {
+		-webkit-text-size-adjust: 100%;
+	}
+
+	body {
+		background-color: var(--porcelain);
+		color: var(--ink);
+		font-family: var(--display);
+		font-size: 1rem;
+		line-height: 1.6;
+		-webkit-font-smoothing: antialiased;
+	}
+
+	a {
+		color: inherit;
+		text-decoration: none;
+	}
+
+	/* Patina rather than the browser default, so it stays visible on the dark
+	   surface too. */
+	:focus-visible {
+		outline: 2px solid var(--patina);
+		outline-offset: 3px;
+		border-radius: 1px;
+	}
+}
+
+@layer components {
+	.shell {
+		width: 100%;
+		max-width: var(--measure);
+		margin-inline: auto;
+		padding-inline: var(--gutter);
+	}
+
+	/* The utility voice: names of things and their values, never prose. */
+	.label {
+		font-family: var(--mono);
+		font-size: 0.6875rem;
+		font-weight: 500;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+	}
+
+	/* ---- masthead ---- */
+
+	.masthead {
+		border-bottom: 1px solid var(--rule);
+		background-color: color-mix(in srgb, var(--porcelain) 82%, white);
+	}
+
+	.masthead__inner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1.5rem;
+		min-height: 3.75rem;
+	}
+
+	.wordmark {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.625rem;
+		color: var(--ink);
+	}
+
+	.wordmark__glyph {
+		display: block;
+		width: 1.125rem;
+		height: 1.125rem;
+		color: var(--patina);
+	}
+
+	.wordmark__text {
+		letter-spacing: 0.26em;
+	}
+
+	.masthead__nav {
+		display: flex;
+		align-items: center;
+		gap: clamp(1rem, 3vw, 2rem);
+	}
+
+	.masthead__link {
+		color: var(--ink-soft);
+		padding-block: 0.35rem;
+		border-bottom: 1px solid transparent;
+		transition: color 140ms ease, border-color 140ms ease;
+	}
+
+	.masthead__link:hover {
+		color: var(--ink);
+		border-bottom-color: var(--patina);
+	}
+
+	/* ---- hero ---- */
+
+	.hero {
+		padding-block: clamp(3.5rem, 8vw, 6.5rem) clamp(3rem, 6vw, 5rem);
+	}
+
+	.hero__grid {
+		display: grid;
+		grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+		gap: clamp(2.5rem, 5vw, 4.5rem);
+		align-items: start;
+	}
+
+	.eyebrow {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		color: var(--patina);
+	}
+
+	.eyebrow::before {
+		content: "";
+		width: 1.75rem;
+		height: 1px;
+		background-color: currentColor;
+		flex: none;
+	}
+
+	.hero__title {
+		margin-top: 1.75rem;
+		font-size: clamp(2.5rem, 5.4vw, 4.125rem);
+		font-weight: 660;
+		line-height: 1.06;
+		letter-spacing: -0.035em;
+		/* Measured rather than balanced: keeps the marked phrase on one line. */
+		max-width: 11ch;
+	}
+
+	.mark {
+		color: var(--patina);
+		/* A band under the x-height: a filled box would run into the descenders
+		   of the line above. */
+		background-image: linear-gradient(
+			var(--patina-wash),
+			var(--patina-wash)
+		);
+		background-repeat: no-repeat;
+		background-size: 100% 0.34em;
+		background-position: 0 88%;
+		box-decoration-break: clone;
+		-webkit-box-decoration-break: clone;
+	}
+
+	.hero__deck {
+		margin-top: 1.625rem;
+		max-width: 46ch;
+		font-size: clamp(1.0625rem, 1.3vw, 1.1875rem);
+		line-height: 1.65;
+		color: var(--ink-soft);
+		text-wrap: pretty;
+	}
+
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+		margin-top: 2.25rem;
+	}
+
+	.button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.875rem 1.375rem;
+		border: 1px solid transparent;
+		border-radius: 2px;
+		font-family: var(--mono);
+		font-size: 0.6875rem;
+		font-weight: 500;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		transition: background-color 140ms ease, border-color 140ms ease,
+			color 140ms ease;
+	}
+
+	.button--solid {
+		background-color: var(--ink);
+		color: var(--porcelain);
+	}
+
+	.button--solid:hover {
+		background-color: var(--patina);
+	}
+
+	.button--outline {
+		background-color: var(--plate);
+		border-color: var(--rule);
+		color: var(--ink);
+	}
+
+	.button--outline:hover {
+		border-color: var(--patina);
+		color: var(--patina);
+	}
+
+	.button__arrow {
+		width: 0.6875rem;
+		height: 0.6875rem;
+	}
+
+	/* ---- the receipt ---- */
+
+	.receipt {
+		background-color: var(--ink);
+		color: color-mix(in srgb, var(--porcelain) 88%, transparent);
+		border-radius: 3px;
+		padding: clamp(1.5rem, 2.4vw, 2rem);
+		box-shadow: 0 24px 48px -32px rgba(19, 28, 26, 0.65);
+	}
+
+	.receipt__head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1rem;
+		padding-bottom: 1rem;
+		border-bottom: 1px solid var(--rule-dark);
+		color: var(--bronze-lit);
+	}
+
+	.ledger {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+
+	.ledger__row {
+		display: grid;
+		grid-template-columns: 2.5rem minmax(0, 1fr);
+		align-items: baseline;
+		gap: 1rem;
+		padding-block: 0.875rem;
+		border-bottom: 1px solid var(--rule-dark);
+	}
+
+	.ledger__count {
+		font-family: var(--mono);
+		font-size: 1.5rem;
+		font-weight: 500;
+		line-height: 1;
+		letter-spacing: -0.03em;
+		font-variant-numeric: tabular-nums;
+		color: var(--bronze-lit);
+	}
+
+	.ledger__item {
+		font-size: 0.9375rem;
+		line-height: 1.45;
+	}
+
+	.receipt__note {
+		margin-top: 1.25rem;
+		font-size: 0.8125rem;
+		line-height: 1.6;
+		color: var(--dim-lit);
+		text-wrap: pretty;
+	}
+
+	/* ---- generic section furniture ---- */
+
+	.band {
+		padding-block: clamp(3.5rem, 7vw, 5.5rem);
+		border-top: 1px solid var(--rule);
+	}
+
+	.band--raised {
+		background-color: #e6ecea;
+	}
+
+	.band__head {
+		display: grid;
+		grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+		gap: 0 clamp(2.5rem, 5vw, 4.5rem);
+		align-items: end;
+	}
+
+	.band__head .eyebrow {
+		grid-column: 1 / -1;
+		margin-bottom: 1.25rem;
+	}
+
+	.band__title {
+		font-size: clamp(1.75rem, 3vw, 2.5rem);
+		font-weight: 640;
+		line-height: 1.08;
+		letter-spacing: -0.03em;
+		text-wrap: balance;
+	}
+
+	.band__deck {
+		max-width: 44ch;
+		color: var(--ink-soft);
+		text-wrap: pretty;
+	}
+
+	/* ---- state of the project ---- */
+
+	.state {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: clamp(2rem, 4vw, 3.5rem);
+		margin-top: clamp(2.5rem, 4vw, 3.25rem);
+	}
+
+	.state__title {
+		display: flex;
+		align-items: center;
+		gap: 0.625rem;
+		padding-bottom: 0.875rem;
+		border-bottom: 1px solid var(--rule);
+	}
+
+	.state__title--done {
+		color: var(--patina);
+	}
+
+	.state__title--pending {
+		color: var(--dim);
+	}
+
+	.state__list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+
+	.state__list li {
+		display: grid;
+		grid-template-columns: 0.75rem minmax(0, 1fr);
+		align-items: start;
+		gap: 0.875rem;
+		padding-block: 0.75rem;
+		border-bottom: 1px solid var(--rule);
+		font-size: 0.9375rem;
+		line-height: 1.5;
+	}
+
+	.state__list--pending li {
+		color: var(--dim);
+	}
+
+	.state__bullet {
+		width: 0.75rem;
+		height: 0.75rem;
+		margin-top: 0.375rem;
+	}
+
+	.state__bullet--done {
+		color: var(--patina);
+	}
+
+	.state__bullet--pending {
+		color: var(--rule);
+	}
+
+	/* ---- build facts ---- */
+
+	.plates {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 1.25rem;
+		margin-top: clamp(2.5rem, 4vw, 3.25rem);
+	}
+
+	.plate-card {
+		background-color: var(--plate);
+		border: 1px solid var(--rule);
+		border-top: 2px solid var(--patina);
+		border-radius: 2px;
+		padding: clamp(1.5rem, 2.2vw, 1.875rem);
+		box-shadow: 0 14px 30px -26px rgba(19, 28, 26, 0.55);
+	}
+
+	.plate-card__index {
+		color: var(--bronze);
+	}
+
+	.plate-card__title {
+		margin-top: 1rem;
+		font-size: 1.125rem;
+		font-weight: 620;
+		letter-spacing: -0.015em;
+		line-height: 1.25;
+	}
+
+	.plate-card__body {
+		margin-top: 0.75rem;
+		font-size: 0.9375rem;
+		line-height: 1.6;
+		color: var(--ink-soft);
+		text-wrap: pretty;
+	}
+
+	/* ---- quick start ---- */
+
+	.start .band__head {
+		display: block;
+	}
+
+	.start .band__title {
+		margin-top: 1.25rem;
+	}
+
+	.start .band__deck {
+		margin-top: 0.875rem;
+	}
+
+	.start {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+		gap: clamp(2rem, 4vw, 3.5rem);
+		align-items: center;
+	}
+
+	.terminal {
+		background-color: var(--plate);
+		border: 1px solid var(--rule);
+		border-radius: 3px;
+		overflow: hidden;
+	}
+
+	.terminal__bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.75rem 1.125rem;
+		border-bottom: 1px solid var(--rule);
+		color: var(--dim);
+	}
+
+	.terminal__body {
+		margin: 0;
+		padding: 1.25rem 1.125rem 1.375rem;
+		font-family: var(--mono);
+		font-size: 0.8125rem;
+		line-height: 1.9;
+		overflow-x: auto;
+	}
+
+	.terminal__prompt {
+		color: var(--patina);
+		user-select: none;
+	}
+
+	.terminal__comment {
+		color: var(--dim);
+	}
+
+	/* ---- footer ---- */
+
+	.footer {
+		border-top: 1px solid var(--rule);
+		padding-block: 2.5rem 3rem;
+	}
+
+	.footer__inner {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		color: var(--dim);
+	}
+
+	.footer__nav {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1.5rem;
+	}
+
+	.footer__nav a:hover {
+		color: var(--ink);
+	}
+
+	/* ---- error page ---- */
+
+	.fault {
+		min-height: 68vh;
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+		align-items: flex-start;
+		padding-block: clamp(3rem, 8vw, 6rem);
+	}
+
+	.fault__status {
+		font-family: var(--mono);
+		font-size: clamp(3.5rem, 12vw, 6rem);
+		font-weight: 500;
+		line-height: 1;
+		letter-spacing: -0.05em;
+		font-variant-numeric: tabular-nums;
+		color: var(--patina);
+	}
+
+	.fault__message {
+		margin-top: 1.25rem;
+		font-size: clamp(1.125rem, 2vw, 1.375rem);
+		font-weight: 560;
+		letter-spacing: -0.015em;
+		max-width: 32ch;
+	}
+
+	/* ---- entrance ---- */
+
+	.enter {
+		animation: enter 520ms cubic-bezier(0.22, 0.85, 0.3, 1) backwards;
+	}
+
+	.enter--2 {
+		animation-delay: 70ms;
+	}
+
+	.enter--3 {
+		animation-delay: 140ms;
+	}
+
+	.enter--4 {
+		animation-delay: 210ms;
+	}
+
+	@keyframes enter {
+		from {
+			opacity: 0;
+			transform: translateY(12px);
+		}
+	}
+}
+
+@media (max-width: 62rem) {
+	.hero__grid,
+	.start,
+	.band__head {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.band__title {
+		margin-bottom: 0.875rem;
+	}
+
+	.plates {
+		grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+	}
+}
+
+@media (max-width: 40rem) {
+	.state,
+	.plates {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.masthead__nav {
+		gap: 1rem;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.enter {
+		animation: none;
+	}
+
+	*,
+	*::before,
+	*::after {
+		transition-duration: 1ms !important;
+	}
+}

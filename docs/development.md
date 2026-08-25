@@ -9,14 +9,49 @@ make run   # from source, development profile
 make ci    # everything the pipeline runs
 ```
 
-`make run` passes `--dev`, so the service serves TLS from a certificate it
-generates in memory at every boot: reach it at `https://localhost:7500` and tell
-the client to skip verification (`curl -k`). Nothing is written to disk, and a
-new pair is minted on the next start — which is why the browser asks for the
-security exception again after every restart.
+`make run` passes `--dev`, so the service comes up on plain HTTP at
+`http://localhost:7500`, with the public url derived from the listener. All four
+run paths — `make run`, `make dev`, `make tilt`, `make image-run` — agree on
+that scheme, so a URL copied between them still works.
+
+HTTPS is one variable away:
+
+```sh
+TLS_TERMINATION=app make run   # https://localhost:7500
+```
+
+Under the dev profile that also mints the certificate in memory, so there is no
+key pair to produce. Nothing is written to disk and a new pair is generated on
+the next start, which is why the browser asks for the security exception again
+after every restart — the reason it is no longer the default.
 
 Running the binary without `--dev` is running it as production, and production
-refuses to boot until `tls.termination` and `public_url` are declared.
+refuses to boot until `tls.termination` and `public_url` are declared. There is
+no default there: "a gateway handles TLS" and "the certificate was forgotten"
+produce the same configuration, and only an operator can tell them apart.
+
+### What the plain HTTP default costs
+
+No development loop exercises TLS or `CertificateSource` any more. The listener
+built from a generated certificate now lives only in the unit tests and in one
+integration test that opts in with `TLS_TERMINATION=app` — and in production,
+where a break would be found by a customer.
+
+This deserves revisiting when sessions arrive. A `Secure` cookie is not stored
+by the browser over plain HTTP, and the HSTS header is only sent over HTTPS, so
+neither would be exercised by the loop that is about to grow login forms. Either
+the default goes back to `app` then, or the session work runs against
+`TLS_TERMINATION=app` deliberately.
+
+`make assets` generates `internal/templates/assets/css/app.css` with the
+Tailwind standalone CLI, downloaded and checksum-verified into `bin/` on first
+use — no Node involved. `make build`, `make test`, `make test-integration` and
+`make ci` all depend on it and run it for you. Calling `go build` or `go run`
+directly does not, and every profile — development included — refuses to boot
+without the stylesheet, with an error naming `make assets`. There is no
+"unstyled page" fallback: the layout resolves the stylesheet through the same
+asset function that turns a typo into a test failure, so a boot without it
+would answer every route with an error document instead.
 
 ## Hot reload and debugger
 
@@ -25,7 +60,7 @@ make dev
 ```
 
 The compose stack runs the development profile too, so the service there also
-answers over HTTPS on `7500`. The source is mounted and rebuilt by air on every
+answers plain HTTP on `7500`. The source is mounted and rebuilt by air on every
 change, with delve listening on `2345`, and the service talks to a Postgres
 container beside it rather than to sqlite — see [The database in the
 loop](#the-database-in-the-loop) below. The container runs as root and carries
@@ -35,6 +70,10 @@ the process. That image never leaves a developer machine.
 The build uses `-gcflags='all=-N -l'`; without disabling optimisation and
 inlining, breakpoints land on lines other than the ones you set. Delve starts
 with `--continue`, so the service is usable even when nobody is attached.
+
+Air now watches `.gohtml` and `.css` too, and runs `make assets` before every
+rebuild, so editing a template or its Tailwind classes regenerates the
+stylesheet along with the binary.
 
 ## Kubernetes loop
 
@@ -54,10 +93,10 @@ The overlay also brings up a Postgres of its own, which the application waits
 for before starting — it connects during assembly, so starting them together
 would only crash-loop until the server answered.
 
-It also selects the development profile, which means the pod serves TLS from a
-generated certificate, so all three probes are patched to `scheme: HTTPS` and
-the forwarded port speaks HTTPS. The kubelet does not verify the certificate a
-probe is offered, which is what makes a self-signed one workable there.
+It also selects the development profile and declares `TLS_TERMINATION=none`, so
+the pod speaks plain HTTP and the probes are the base ones, unpatched. The
+forwarded port is therefore `http://localhost:7500`, the same address the other
+run paths use.
 
 ### Leftover images
 

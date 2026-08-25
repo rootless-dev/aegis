@@ -12,6 +12,22 @@ COVERAGE    := coverage.out
 GOSEC       := github.com/securego/gosec/v2/cmd/gosec@v2.28.0
 SCANNER     := sonarsource/sonar-scanner-cli:12.1
 
+# A tool version is a dependency and gets pinned like one; the checksums live in
+# tailwind.sha256.
+TAILWIND_VERSION := v4.3.3
+TAILWIND_INPUT   := internal/templates/tailwind/input.css
+TAILWIND_OUTPUT  := internal/templates/assets/css/app.css
+
+# The version and the platform are part of the filename because $(TAILWIND_BIN)
+# is a file target with no prerequisites: once the file exists nothing downloads
+# again. An unqualified name would hand the macOS binary to the container that
+# shares bin/ through the bind mount, and would keep the old binary after a
+# version bump.
+TAILWIND_OS    := $(shell uname -s | tr '[:upper:]' '[:lower:]' | sed 's/^darwin$$/macos/')
+TAILWIND_ARCH  := $(shell uname -m | sed -e 's/^x86_64$$/x64/' -e 's/^amd64$$/x64/' -e 's/^aarch64$$/arm64/')
+TAILWIND_ASSET := tailwindcss-$(TAILWIND_OS)-$(TAILWIND_ARCH)
+TAILWIND_BIN   := bin/$(TAILWIND_ASSET)-$(TAILWIND_VERSION)
+
 SONAR_HOST_URL ?=
 SONAR_TOKEN    ?=
 
@@ -38,13 +54,37 @@ help: ## Show this help
 
 ##@ Development
 
+# assets is a prerequisite because every profile refuses to boot without the
+# generated stylesheet, and this is the first command in the documentation.
 .PHONY: run
-run: ## Run the server from source, under the development profile
+run: assets ## Run the server from source, under the development profile
 	go run ./cmd/server --dev
 
 .PHONY: build
-build: ## Compile the server binary
+build: assets ## Compile the server binary
 	go build -o $(BINARY) ./cmd/server
+
+.PHONY: assets
+assets: $(TAILWIND_BIN) ## Generate the stylesheet
+	@mkdir -p $(dir $(TAILWIND_OUTPUT))
+	$(TAILWIND_BIN) -i $(TAILWIND_INPUT) -o $(TAILWIND_OUTPUT) --minify
+
+# Fetching a binary at build time is a supply chain surface, so the checksum is
+# not optional.
+$(TAILWIND_BIN):
+	@mkdir -p bin
+	@name="$(TAILWIND_ASSET)"; \
+	echo "downloading $$name $(TAILWIND_VERSION)"; \
+	curl -sSfL "https://github.com/tailwindlabs/tailwindcss/releases/download/$(TAILWIND_VERSION)/$$name" -o $(TAILWIND_BIN); \
+	expected=$$(awk -v n="$$name" '$$2 == n {print $$1}' tailwind.sha256); \
+	if [ -z "$$expected" ]; then echo "no checksum recorded for $$name in tailwind.sha256"; rm -f $(TAILWIND_BIN); exit 1; fi; \
+	if command -v sha256sum >/dev/null 2>&1; then \
+		actual=$$(sha256sum $(TAILWIND_BIN) | awk '{print $$1}'); \
+	else \
+		actual=$$(shasum -a 256 $(TAILWIND_BIN) | awk '{print $$1}'); \
+	fi; \
+	if [ "$$expected" != "$$actual" ]; then echo "checksum mismatch for $$name"; rm -f $(TAILWIND_BIN); exit 1; fi; \
+	chmod +x $(TAILWIND_BIN)
 
 .PHONY: tidy
 tidy: ## Sync go.mod and go.sum
@@ -56,7 +96,7 @@ fmt: ## Format the code
 
 .PHONY: clean
 clean: ## Remove build and coverage artifacts
-	rm -rf bin $(COVERAGE) coverage.html
+	rm -rf bin $(COVERAGE) coverage.html $(TAILWIND_OUTPUT)
 
 ##@ Checks
 
@@ -76,15 +116,17 @@ vet: ## Run go vet, including the integration tagged files
 # its own tests execute, so code used across a boundary — the response writers,
 # reached through the middleware — reads as untouched.
 .PHONY: test
-test: ## Run the unit tests with the race detector
+test: assets ## Run the unit tests with the race detector
 	go test -race -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE) ./...
 
 .PHONY: test-integration
-test-integration: ## Run the integration tests, against sqlite by default
+test-integration: assets ## Run the integration tests, against sqlite by default
 	go test -tags=integration -timeout=15m ./internal/... ./test/integration/...
 
+# Same prerequisite as test-integration: this suite compiles and boots the
+# binary.
 .PHONY: test-integration-all
-test-integration-all: ## Run the integration tests against every supported engine
+test-integration-all: assets ## Run the integration tests against every supported engine
 	@for driver in sqlite postgres mysql mariadb; do \
 		echo "== $$driver =="; \
 		AEGIS_TEST_DRIVER=$$driver go test -tags=integration -timeout=15m ./internal/... ./test/integration/... || exit 1; \
@@ -104,7 +146,7 @@ gosec: ## Run the security scanner
 	go run $(GOSEC) -fmt=text -exclude-dir=.github ./...
 
 .PHONY: ci
-ci: fmt-check vet test test-integration gosec ## Run everything the pipeline runs
+ci: assets fmt-check vet test test-integration gosec ## Run everything the pipeline runs
 
 ##@ Sonar
 

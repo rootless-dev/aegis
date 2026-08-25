@@ -10,6 +10,7 @@ import (
 
 	"github.com/phuslu/log"
 	"github.com/rootless-dev/aegis/internal/http/middleware"
+	"github.com/rootless-dev/aegis/internal/http/response"
 )
 
 func discardLogger() *log.Logger {
@@ -73,7 +74,7 @@ func TestRequestIDRejectsUnsafeInboundValue(t *testing.T) {
 }
 
 func TestRecovererAnswersOAuthServerError(t *testing.T) {
-	handler := middleware.Recoverer(discardLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := middleware.Recoverer(discardLogger(), response.ServerError)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("boom")
 	}))
 
@@ -95,7 +96,7 @@ func TestRecovererAnswersOAuthServerError(t *testing.T) {
 
 func TestRecovererKeepsCommittedResponse(t *testing.T) {
 	handler := middleware.RequestLogger(discardLogger())(
-		middleware.Recoverer(discardLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		middleware.Recoverer(discardLogger(), response.ServerError)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte("partial"))
 			panic("boom after committing")
@@ -139,5 +140,87 @@ func TestRequestLoggerKeepsFlusherReachable(t *testing.T) {
 
 	if !flushable {
 		t.Error("the response recorder must not hide http.Flusher")
+	}
+}
+
+func TestSecurityHeadersSendsThePolicy(t *testing.T) {
+	handler := middleware.SecurityHeaders(middleware.ContentSecurityPolicy)(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	// Written out by hand: comparing the constant to itself would pass whatever
+	// it said, including a directive dropped by a refactor.
+	const want = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+
+	if got := recorder.Header().Get("Content-Security-Policy"); got != want {
+		t.Errorf("Content-Security-Policy =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestSecurityHeadersAlwaysSendsTheOtherThree(t *testing.T) {
+	// An empty policy is what a disabled csp section produces.
+	handler := middleware.SecurityHeaders("")(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if got := recorder.Header().Get("Content-Security-Policy"); got != "" {
+		t.Errorf("an empty policy must send no header, got %q", got)
+	}
+
+	for header, want := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"Referrer-Policy":        "no-referrer",
+		"X-Frame-Options":        "DENY",
+	} {
+		if got := recorder.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func TestRecovererUsesTheWriterItWasGiven(t *testing.T) {
+	called := false
+
+	handler := middleware.Recoverer(discardLogger(), func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("<html>boom</html>"))
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if !called {
+		t.Fatal("the recoverer did not use the supplied error writer")
+	}
+
+	if recorder.Body.String() != "<html>boom</html>" {
+		t.Errorf("body = %q", recorder.Body.String())
+	}
+}
+
+func TestNoSniffCoversAResponseThatIsNotAPage(t *testing.T) {
+	handler := middleware.NoSniff()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+	}))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/livez", nil))
+
+	if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+
+	// The page-only headers must not follow it onto every response.
+	if got := recorder.Header().Get("Content-Security-Policy"); got != "" {
+		t.Errorf("Content-Security-Policy = %q, want the page surface to own it", got)
 	}
 }

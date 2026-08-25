@@ -68,6 +68,12 @@ Only an operator knows which one is true, so the boot fails until they say.
 | `proxy` | a gateway in front | `proxy.trusted_proxies` is required, and a certificate here is an error |
 | `none` | nobody, or a service mesh doing transparent mTLS | forwarded headers are ignored |
 
+The dev profile is the one place with a default, and it is `none`: a local run
+is plain HTTP with nothing to configure. Declaring `app` there serves HTTPS from
+a certificate generated in memory at every boot, so the key pair stays optional
+— that combination is a development affordance and a production boot can never
+fall into it.
+
 What the choice changes at runtime, beyond the listener:
 
 - **the scheme** every cookie, redirect and issuer is built from. Under `proxy`
@@ -236,7 +242,7 @@ both sources, because accepting it would silently mean nanoseconds.
 | `http_server.idle_timeout` | `HTTP_SERVER_IDLE_TIMEOUT` | `60s` |
 | `http_server.request_timeout` | `HTTP_SERVER_REQUEST_TIMEOUT` | `10s` |
 | `http_server.max_header_bytes` | `HTTP_SERVER_MAX_HEADER_BYTES` | `1048576` |
-| `tls.termination` | `TLS_TERMINATION` | none, required outside `dev` |
+| `tls.termination` | `TLS_TERMINATION` | required outside `dev`, where it fills in `none` |
 | `tls.cert_file` | `TLS_CERT_FILE` | empty |
 | `tls.key_file` | `TLS_KEY_FILE` | empty |
 | `tls.reload_interval` | `TLS_RELOAD_INTERVAL` | `1h` |
@@ -245,6 +251,7 @@ both sources, because accepting it would silently mean nanoseconds.
 | `hsts.enabled` | `HSTS_ENABLED` | `true` |
 | `hsts.max_age` | `HSTS_MAX_AGE` | `8760h` |
 | `hsts.include_subdomains` | `HSTS_INCLUDE_SUBDOMAINS` | `false` |
+| `csp.enabled` | `CSP_ENABLED` | `true` |
 | `database.driver` | `DATABASE_DRIVER` | none, required outside `dev` |
 | `database.host` | `DATABASE_HOST` | empty |
 | `database.port` | `DATABASE_PORT` | empty, the engine's own default |
