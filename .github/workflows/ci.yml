@@ -47,6 +47,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Generate assets
+        run: make assets
+
       # covermode=atomic is required alongside -race; the default mode is not
       # safe under concurrent access and would report bogus numbers.
       - name: Test
@@ -75,6 +78,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Generate assets
+        run: make assets
 
       - name: Build
         run: go build -o bin/aegisd ./cmd/server
