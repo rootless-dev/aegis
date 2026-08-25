@@ -109,16 +109,101 @@ jobs:
           path: bin/aegisd
           retention-days: 7
 
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # --target production: the last stage in the file is debug, so the default
+      # target would build the busybox image and leave the one every environment
+      # runs untested.
+      - name: Build the production image
+        run: docker build -f docker/Dockerfile.production --target production -t aegis:ci .
+
+      # The assets stage is the one part of the build no other job reaches. It
+      # runs on the build platform, downloads the Tailwind CLI, and its output
+      # arrives through a COPY that the .dockerignore has to leave room for. A
+      # break there yields an image that refuses to boot, or one serving pages
+      # with no stylesheet, and nothing else in the pipeline would notice.
+      #
+      # --dev because sqlite is refused outside development, and the engine
+      # matrix already covers the engines a customer runs: what is under test
+      # here is the image, not the database. DATABASE_PATH is spelled out
+      # because the default is relative, the working directory is /, and the
+      # image runs as nonroot.
+      - name: Run it
+        run: |
+          docker run -d --rm --name aegis-ci \
+            -p 7500:7500 \
+            -e DATABASE_PATH=/tmp/aegis-ci.db \
+            aegis:ci --dev
+
+      - name: Wait for readiness
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:7500/readyz >/dev/null; then
+              echo "The container is ready."
+              exit 0
+            fi
+
+            sleep 1
+          done
+
+          echo "The container never became ready."
+          docker logs aegis-ci
+          exit 1
+
+      # The href is read back out of the rendered page rather than computed
+      # here. It is the layout's own asset call, fingerprinted by the content,
+      # so following it is what proves the generated stylesheet reached the
+      # binary — not merely that a route answers.
+      - name: Serve the page and the stylesheet it links
+        run: |
+          if ! page=$(curl -sf http://127.0.0.1:7500/); then
+            echo "The landing page did not answer."
+            docker logs aegis-ci
+            exit 1
+          fi
+
+          href=$(printf '%s' "$page" | sed -n 's/.*<link rel="stylesheet" href="\([^"]*\)".*/\1/p')
+
+          if [ -z "$href" ]; then
+            echo "The page links no stylesheet:"
+            printf '%s\n' "$page"
+            exit 1
+          fi
+
+          if ! type=$(curl -sf -o /dev/null -w '%{content_type}' "http://127.0.0.1:7500$href"); then
+            echo "The stylesheet the page links is not served: $href"
+            docker logs aegis-ci
+            exit 1
+          fi
+
+          case "$type" in
+            text/css*) echo "$href is served as $type." ;;
+            *) echo "$href is served as $type, want text/css."; exit 1 ;;
+          esac
+
+      # always(), so a failure above still tears the container down rather than
+      # leaving it to the runner going away.
+      - name: Stop it
+        if: always()
+        run: docker stop aegis-ci || true
+
   # The name branch protection requires. A matrix reports one context per leg,
   # so requiring the matrix job by name means editing the repository settings
   # every time an engine joins or leaves it — and until someone does, the
   # required context never arrives and the pull request stays blocked with
   # everything green. This job is that stable name, and the matrix is free to
   # grow underneath it.
+  #
+  # The image hangs here for the same reason: one required context, and what it
+  # covers is decided in this file rather than in the repository settings.
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: engines
+    needs: [engines, image]
     # always() so a failing leg cannot leave this skipped: a required context
     # that never reports blocks the pull request with everything else green,
     # which is the state this job exists to avoid.
@@ -131,18 +216,26 @@ jobs:
     # rather than broken. The run that replaced it is what reports.
     if: always() && !cancelled()
     steps:
-      - name: Check the engine matrix
-        # result is the aggregate of every leg: success only when all of them
-        # succeeded, which is what the required context has to mean.
+      - name: Check what this gate covers
+        # A matrix result is the aggregate of every leg: success only when all
+        # of them succeeded, which is what the required context has to mean.
         run: |
-          result="${{ needs.engines.result }}"
+          engines="${{ needs.engines.result }}"
+          image="${{ needs.image.result }}"
 
-          if [ "$result" != "success" ]; then
-            echo "The engine matrix did not pass: $result"
+          if [ "$engines" != "success" ]; then
+            echo "The engine matrix did not pass: $engines"
+          fi
+
+          if [ "$image" != "success" ]; then
+            echo "The image did not pass: $image"
+          fi
+
+          if [ "$engines" != "success" ] || [ "$image" != "success" ]; then
             exit 1
           fi
 
-          echo "Every engine passed."
+          echo "Every engine passed, and the image serves the page it ships."
 
   gosec:
     name: Security (gosec)
