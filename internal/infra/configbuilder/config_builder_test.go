@@ -15,7 +15,7 @@ import (
 // settingPrefixes covers every variable the builder reads.
 var settingPrefixes = []string{
 	"AEGIS_", "APP_", "PUBLIC_URL", "LOGGING_", "HTTP_SERVER_",
-	"TLS_", "PROXY_", "HSTS_", "GRACEFUL_", "HEALTH_", "BANNER_", "DATABASE_",
+	"TLS_", "PROXY_", "HSTS_", "CSP_", "GRACEFUL_", "HEALTH_", "BANNER_", "DATABASE_",
 }
 
 // TestMain runs these tests against an empty environment. The builder reads the
@@ -113,19 +113,19 @@ func TestDefaultsUnderDevelopmentProduceAValidConfiguration(t *testing.T) {
 		t.Errorf("want 0.0.0.0:7500, got %s", cfg.HttpServer.Address())
 	}
 
-	// Development serves TLS itself, from a certificate it generates, so the
-	// path exercised locally is the same one production takes.
-	if cfg.TLS.Termination != configs.TerminationApp {
-		t.Errorf("termination: want app, got %q", cfg.TLS.Termination)
+	// Plain HTTP, so a browser is not asked to accept a new self-signed
+	// certificate on every restart. TLS_TERMINATION=app is the way back.
+	if cfg.TLS.Termination != configs.TerminationNone {
+		t.Errorf("termination: want none, got %q", cfg.TLS.Termination)
 	}
 
-	if !cfg.TLS.GeneratesCertificate(cfg.Profile) {
-		t.Error("development with no certificate configured should generate one")
+	if cfg.TLS.GeneratesCertificate(cfg.Profile) {
+		t.Error("nothing serves TLS by default, so no certificate should be generated")
 	}
 
 	// The wildcard bind is where it listens, not somewhere a browser can go.
-	if cfg.PublicURL != "https://localhost:7500" {
-		t.Errorf("public url: want https://localhost:7500, got %q", cfg.PublicURL)
+	if cfg.PublicURL != "http://localhost:7500" {
+		t.Errorf("public url: want http://localhost:7500, got %q", cfg.PublicURL)
 	}
 }
 

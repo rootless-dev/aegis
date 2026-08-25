@@ -3,14 +3,29 @@
 ## Layout
 
 ```
-cmd/server            entry point: signals and exit code, nothing else
-internal/application  assembly and lifecycle
-internal/configs      configuration structs, defaults and validation
-internal/http         server, middleware, response format
-internal/infra        logging, graceful shutdown, health, env parsing
-internal/buildinfo    identity of the running binary
-test/integration      exercises the compiled binary
+cmd/server             entry point: signals and exit code, nothing else
+internal/application   assembly and lifecycle
+internal/configs       configuration structs, defaults and validation
+internal/handler/page  the handlers for the HTML surface
+internal/http          server, middleware, response format
+internal/http/assets   fingerprints and serves the static files
+internal/http/render   composes layouts with pages and writes HTML, over an injected filesystem
+internal/infra         logging, graceful shutdown, health, env parsing
+internal/buildinfo     identity of the running binary
+internal/templates     owns the embedded templates and assets; declares two filesystems and no behaviour
+test/integration       exercises the compiled binary
 ```
+
+`internal/templates` declares the two embeds and nothing else: a template and an
+asset are deliberately separate filesystems, because a template is executed and
+never served raw, an asset is served raw, and one filesystem for both would let
+the file server hand out `layouts/base.gohtml` as text.
+
+`internal/handler/page` sits at that depth, not under `internal/http`, on
+purpose. `internal/http/*` is mechanism — transport, no business rule, no
+dependency on domain or service — while a handler is a layer, where a request
+becomes a use case call. Keeping the layers at one level is what makes the
+dependency rule readable from the tree.
 
 ## Dependency rule
 
@@ -75,9 +90,43 @@ carry it; the recoverer sits inside the logger so the 500 it produces appears on
 the request line.
 
 The probes are mounted outside that group. The orchestrator polls them every few
-seconds per replica, which would bury real traffic in the request log. They
-still pass through a recoverer, so a panic answers a status rather than dropping
-the connection.
+seconds per replica, which would bury real traffic in the request log. Assets
+are mounted bare alongside them, for the same reason: a stylesheet request is
+not a page view. Both still pass through a recoverer, so a panic answers a
+status rather than dropping the connection.
+
+Behind that, two groups share the base chain — request id, the forwarding
+decision, the request logger, HSTS where enabled, the request timeout — and
+diverge only in how each closes it. The API surface recovers into JSON, the
+same writer the bare-mounted probes and assets fall back on. The page surface
+recovers into HTML and layers the security headers on top of the chain, so an
+unhandled panic still renders as a page rather than a JSON object a browser
+would show as text.
+
+The response format comes from the route group, never from the `Accept`
+header. Negotiating it on the error path would make the format depend on
+something the caller controls — the caller who broke the request being the one
+to decide the shape of the answer. The group is fixed at registration, so it
+cannot be.
+
+Assets carry their own guarantees instead of the chain above: `nosniff`, a
+`Content-Security-Policy: default-src 'none'`, and a `Cache-Control` good for a
+year, because the path itself is fingerprinted by the content's hash and changes
+the moment the file does. That hash is verified again on every request rather
+than merely stripped off the URL, which is what keeps the year-long promise
+honest instead of a name for whatever happens to be sitting behind it. The
+policy is there for one route in particular: `/favicon.ico` answers
+`image/svg+xml`, and an SVG navigated to directly is a document that can execute
+script — harmless for an icon committed to this repository, and the wrong
+default the day a tenant's own logo is served from the same code.
+
+The page surface's CSP carries no `unsafe-inline` and no `unsafe-eval`
+anywhere in it, so no template may carry a `<style>` block, a `style=`
+attribute, an inline event handler or an inline `<script>`. That constraint
+landed with the first page rather than after the console arrived: retrofitting
+it later would mean rewriting every template already written under a looser
+policy. A test in `internal/templates` walks the embedded `.gohtml` files and
+fails on any of the four, so the rule is enforced rather than remembered.
 
 Errors are written in the OAuth 2 format of RFC 6749 section 5.2, which is what
 the endpoints of this service speak.

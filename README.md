@@ -25,9 +25,9 @@ make        # every target, grouped
 ```
 
 The service listens on `:7500` and answers `/livez` and `/readyz`. `make run`
-uses the development profile, which serves TLS from a certificate generated in
-memory at every boot, so reach it at `https://localhost:7500` and tell the client
-to skip verification (`curl -k`).
+uses the development profile, which serves plain HTTP, so reach it at
+`http://localhost:7500`. `TLS_TERMINATION=app` opts into HTTPS there, on a
+certificate generated in memory at every boot.
 
 ## Configuration
 

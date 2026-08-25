@@ -7,6 +7,26 @@
 # single place across every Dockerfile here.
 
 ARG GO_VERSION=1.26
+ARG DEBIAN_VERSION=bookworm-slim
+
+# The output is plain CSS, so this stage runs once on the build platform and is
+# shared by every target.
+#
+# Debian, not Alpine: the standalone Tailwind CLI is a Bun-compiled binary linked
+# against glibc and aborts on musl, gcompat installed or not. It is the one
+# exception in this file.
+FROM --platform=$BUILDPLATFORM debian:${DEBIAN_VERSION} AS assets
+
+WORKDIR /src
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    make curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Makefile tailwind.sha256 ./
+COPY internal/templates ./internal/templates
+
+RUN make assets
 
 # Pinned to BUILDPLATFORM so the compiler runs natively. Without it buildx
 # emulates it under QEMU for each target architecture, which is about an order
@@ -28,6 +48,9 @@ ARG TARGETARCH
 ARG VERSION=devel
 
 COPY . .
+# Order is load-bearing: copying from the assets stage after COPY . . is what
+# makes the generated file win over whatever the repository has on disk.
+COPY --from=assets /src/internal/templates/assets/css/app.css ./internal/templates/assets/css/app.css
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \

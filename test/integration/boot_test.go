@@ -44,8 +44,9 @@ func start(t *testing.T, extraEnv ...string) *instance {
 	return launch(t, appPort, "http", http.DefaultClient, env, nil)
 }
 
-// startDevelopment exercises the profile flag, where TLS is served from a
-// certificate the process mints for itself and nothing has to be configured.
+// startDevelopment exercises the TLS opt-in: dev serves plain HTTP, and
+// TLS_TERMINATION=app turns HTTPS back on without a key pair on the machine.
+// It is the only place left where a generated certificate meets a real socket.
 func startDevelopment(t *testing.T) *instance {
 	t.Helper()
 
@@ -55,7 +56,14 @@ func startDevelopment(t *testing.T) *instance {
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
 	}}
 
-	return launch(t, freePort(t), "https", client, nil, []string{"--dev"})
+	return launch(t, freePort(t), "https", client, []string{"TLS_TERMINATION=app"}, []string{"--dev"})
+}
+
+// startDevelopmentDefaults declares nothing at all, as `make run` does.
+func startDevelopmentDefaults(t *testing.T) *instance {
+	t.Helper()
+
+	return launch(t, freePort(t), "http", http.DefaultClient, nil, []string{"--dev"})
 }
 
 // TestBootsOnDefaultsAndShutsDownCleanly is the reason this package exists: it
@@ -201,8 +209,25 @@ func TestRefusesToBootWithoutADeclaredTopology(t *testing.T) {
 	}
 }
 
-// Development needs no certificate, no gateway and no public url: it mints its
-// own pair and serves TLS through the same code path production takes.
+// Development declaring nothing is plain HTTP: no certificate to accept.
+func TestDevelopmentDefaultsToPlainHTTP(t *testing.T) {
+	server := startDevelopmentDefaults(t)
+	waitUntilReady(t, server)
+
+	status, body := server.get(t, "/livez")
+	if status != http.StatusOK || !strings.Contains(body, `"alive"`) {
+		t.Errorf("livez over plain HTTP: want 200 alive, got %d %s", status, body)
+	}
+
+	if strings.Contains(server.output.String(), "self-signed certificate generated in memory") {
+		t.Errorf("nothing serves TLS, so no certificate should be minted, got:\n%s", server.output.String())
+	}
+
+	stopBinary(t, server)
+}
+
+// Termination "app" under dev needs no certificate, no gateway and no public
+// url: it mints its own pair and takes the same code path production does.
 func TestDevelopmentServesTLSWithAGeneratedCertificate(t *testing.T) {
 	server := startDevelopment(t)
 	waitUntilReady(t, server)

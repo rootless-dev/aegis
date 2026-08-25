@@ -10,11 +10,16 @@ ARG GO_VERSION=1.26
 ARG AIR_VERSION=v1.67.4
 ARG DELVE_VERSION=v1.27.1
 
-FROM golang:${GO_VERSION}-alpine AS development
+# Debian, not -alpine: the standalone Tailwind CLI is a Bun-compiled binary
+# linked against glibc and aborts on musl, gcompat installed or not.
+FROM golang:${GO_VERSION} AS development
 
 WORKDIR /src
 
-RUN apk add --no-cache git
+# make and curl are for `make assets`, which air runs before every rebuild.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git make curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download

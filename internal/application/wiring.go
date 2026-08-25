@@ -2,13 +2,19 @@ package application
 
 import (
 	"crypto/tls"
+	"fmt"
+	"html/template"
 
+	"github.com/rootless-dev/aegis/internal/handler/page"
+	"github.com/rootless-dev/aegis/internal/http/assets"
+	"github.com/rootless-dev/aegis/internal/http/render"
 	"github.com/rootless-dev/aegis/internal/http/server"
 	"github.com/rootless-dev/aegis/internal/infra/certs"
 	"github.com/rootless-dev/aegis/internal/infra/database"
 	"github.com/rootless-dev/aegis/internal/infra/graceful"
 	"github.com/rootless-dev/aegis/internal/infra/health"
 	"github.com/rootless-dev/aegis/internal/infra/logging"
+	"github.com/rootless-dev/aegis/internal/templates"
 )
 
 // The steps below share the error returning signature even where nothing can
@@ -130,6 +136,57 @@ func (app *Application) setCertificates() error {
 	app.certificateReloader = reloader
 
 	return nil
+}
+
+// setWeb builds the HTML surface in the only order that works: the asset server
+// first, since the renderer's asset function comes from it.
+func (app *Application) setWeb() error {
+	assetFS, err := templates.Assets()
+	if err != nil {
+		return err
+	}
+
+	server, err := assets.New(assetFS)
+	if err != nil {
+		return err
+	}
+
+	if err := app.verifyAssets(server); err != nil {
+		return err
+	}
+
+	renderer, err := render.New(render.Options{
+		Templates: templates.Templates(),
+		Funcs:     template.FuncMap{"asset": server.URL},
+	})
+	if err != nil {
+		return err
+	}
+
+	app.assets = server
+	app.page = page.New(renderer, app.logger)
+
+	return nil
+}
+
+// verifyAssets refuses the boot in every profile, development included: the
+// layout resolves both assets through the asset function, which fails on an
+// unknown logical path, so a boot without either one renders the fallback error
+// document on every route. It is separate from setWeb to stay testable against
+// a bare *assets.Server.
+func (app *Application) verifyAssets(server *assets.Server) error {
+	err := server.Verify(assets.Stylesheet, assets.Favicon)
+	if err == nil {
+		return nil
+	}
+
+	// Only the stylesheet is generated. The favicon is committed, and sending
+	// whoever reads this to `make assets` over it would send them nowhere.
+	if server.Verify(assets.Stylesheet) != nil {
+		return fmt.Errorf("%w: run `make assets` before building", err)
+	}
+
+	return err
 }
 
 func (app *Application) setHttpServer() error {

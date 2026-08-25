@@ -53,12 +53,15 @@ without them the forwarded headers are ignored, and `proxy` refuses to boot with
 the list empty. `PUBLIC_URL` has to be replaced either way — it is what clients
 reach the deployment at, and every issuer and redirect is built from it.
 
-The dev overlay runs the development profile, which serves TLS from a
-certificate generated in memory at every boot. The probes there are patched to
-`scheme: HTTPS`, all three of them: the listener no longer speaks plain HTTP.
-The kubelet does not verify the certificate a probe is offered, which is what
-makes a self-signed one workable. That overlay pins one replica, so the two pods
-answering with different generated certificates is not a situation that arises.
+The dev overlay runs the development profile and declares `none` there too, so
+the pod speaks plain HTTP and the base probes apply unchanged. It used to serve
+TLS from a certificate generated at boot, which exercised the same listener
+production takes; that stopped being worth a security interstitial on every
+browser session once the forwarded port started serving pages. Setting it back
+to `app` means adjusting `PUBLIC_URL` to https in the same edit — the boot
+validates one against the other — and patching the three probes to
+`scheme: HTTPS`, which the kubelet accepts because it does not verify what a
+probe is offered.
 
 Where the certificate comes from a Secret mounted by cert-manager or similar,
 point `TLS_CERT_FILE` and `TLS_KEY_FILE` at the mounted files and leave

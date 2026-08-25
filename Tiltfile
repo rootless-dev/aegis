@@ -28,8 +28,11 @@ GOARCH = str(local('go env GOARCH', quiet=True)).strip()
 
 local_resource(
     'compile',
-    'CGO_ENABLED=0 GOOS=linux GOARCH=%s go build -o bin/aegisd ./cmd/server' % GOARCH,
+    'make assets && CGO_ENABLED=0 GOOS=linux GOARCH=%s go build -o bin/aegisd ./cmd/server' % GOARCH,
     deps=['cmd', 'internal', 'go.mod', 'go.sum'],
+    # The stylesheet lands inside internal/, which is itself a dep: without
+    # this, the resource's own output would retrigger it forever.
+    ignore=['internal/templates/assets/css/app.css'],
     labels=['build'],
 )
 
