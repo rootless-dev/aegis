@@ -144,9 +144,9 @@ func requireValidation(t *testing.T, err error, wants string) {
 	}
 }
 
-// Development is the one profile that may serve TLS with nothing configured,
-// because it mints the certificate itself.
-func TestDevelopmentNeedsNoKeyPair(t *testing.T) {
+// Development declaring nothing gets plain HTTP: a certificate generated at
+// boot is an interstitial on every browser session.
+func TestDevelopmentDefaultsToPlainHTTP(t *testing.T) {
 	cfg := configs.Default()
 	cfg.Profile = configs.ProfileDev
 	cfg.Normalize()
@@ -155,12 +155,41 @@ func TestDevelopmentNeedsNoKeyPair(t *testing.T) {
 		t.Fatalf("development should be valid with nothing declared, got %v", err)
 	}
 
-	if !cfg.TLS.GeneratesCertificate(cfg.Profile) {
-		t.Error("development without a key pair should generate one")
+	if cfg.TLS.Termination != configs.TerminationNone {
+		t.Errorf("termination: want none, got %q", cfg.TLS.Termination)
+	}
+
+	if cfg.TLS.ServesTLS() {
+		t.Error("development should not terminate TLS unless it was asked to")
+	}
+
+	if cfg.TLS.GeneratesCertificate(cfg.Profile) {
+		t.Error("nothing serves TLS, so there is no certificate to generate")
+	}
+}
+
+// The opt-in has to produce the certificate too, or turning HTTPS back on would
+// fail the boot for a key pair nobody has locally.
+func TestDevelopmentOptsIntoTLSWithoutAKeyPair(t *testing.T) {
+	cfg := configs.Default()
+	cfg.Profile = configs.ProfileDev
+	cfg.TLS.Termination = configs.TerminationApp
+	cfg.Normalize()
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("development should be valid with nothing but the termination declared, got %v", err)
 	}
 
 	if !cfg.TLS.ServesTLS() {
-		t.Error("development should terminate TLS in the process")
+		t.Error("termination app should terminate TLS in the process")
+	}
+
+	if !cfg.TLS.GeneratesCertificate(cfg.Profile) {
+		t.Error("development serving TLS without a key pair should generate one")
+	}
+
+	if cfg.PublicURL != "https://localhost:7500" {
+		t.Errorf("public url: want https://localhost:7500, got %q", cfg.PublicURL)
 	}
 }
 

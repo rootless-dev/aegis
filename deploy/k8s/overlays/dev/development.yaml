@@ -21,21 +21,22 @@ spec:
               value: debug
             - name: HEALTH_DRAIN_DELAY
               value: "1s"
-            # The development profile serves TLS from a certificate generated in
-            # memory at every boot, so the cluster exercises the same path
-            # production takes rather than a plain HTTP shortcut that only exists
-            # here.
+            # Plain HTTP: a browser reaches the forwarded port, and a
+            # certificate regenerated at every boot is an interstitial on every
+            # session. Switching back to "app" means moving PUBLIC_URL to https
+            # in the same edit — the boot validates one against the other — and
+            # patching the three probes to scheme: HTTPS.
             - name: AEGIS_PROFILE
               value: dev
             - name: TLS_TERMINATION
-              value: "app"
+              value: "none"
             # Cleared: the base declares the ranges of the gateway it assumes,
             # and trusted proxies with no gateway in front is a contradiction
             # the boot refuses. An empty value counts as absent.
             - name: PROXY_TRUSTED_PROXIES
               value: ""
             - name: PUBLIC_URL
-              value: "https://localhost:7500"
+              value: "http://localhost:7500"
 
             # The loop runs against the engine a customer runs, not against
             # sqlite: what breaks between the two -- concurrent writes, locking,
@@ -62,16 +63,3 @@ spec:
               value: disable
             - name: DATABASE_SSL_ROOT_CERT
               value: ""
-
-          # Probes have to follow: the listener no longer speaks plain HTTP. The
-          # kubelet does not verify the certificate it is offered, which is what
-          # makes a self-signed one workable here.
-          livenessProbe:
-            httpGet:
-              scheme: HTTPS
-          readinessProbe:
-            httpGet:
-              scheme: HTTPS
-          startupProbe:
-            httpGet:
-              scheme: HTTPS

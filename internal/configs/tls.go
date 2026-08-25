@@ -74,10 +74,12 @@ func (cfg *TLS) ServesClientsOverHTTPS() bool {
 }
 
 // normalizeForDevelopment fills in the topology development does not have to
-// declare: the process serves TLS from a certificate it generates itself.
+// declare: plain HTTP, with nothing in front. A self-signed certificate is an
+// interstitial on every browser session, so HTTPS is opt-in through
+// TLS_TERMINATION=app, which still generates the pair.
 func (cfg *TLS) normalizeForDevelopment() {
 	if cfg.Termination == "" {
-		cfg.Termination = TerminationApp
+		cfg.Termination = TerminationNone
 	}
 }
 
