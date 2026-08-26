@@ -83,7 +83,7 @@ jobs:
         run: make assets
 
       - name: Build
-        run: go build -o bin/aegisd ./cmd/server
+        run: go build -o bin/aegisd ./cmd/aegisd
 
       # The binary has to survive a boot with no environment at all, which is
       # what catches a default that stopped being valid. Compiles the binary

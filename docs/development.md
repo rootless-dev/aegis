@@ -148,6 +148,54 @@ In the cluster the password comes from a Secret the overlay generates, which is
 the one the hardened base already reads. The development loop therefore takes
 the same path production does, with a throwaway password in it.
 
+## Migrations
+
+```sh
+aegisd migrate [flags]            apply pending migrations
+aegisd migrate status [flags]     report the schema version; exits 1 when behind, 2 when dirty
+aegisd migrate force <n> [flags]  record version n and clear the dirty flag
+```
+
+The subcommand has to come first, before any flag: `aegisd migrate --dev` works,
+`aegisd --dev migrate` does not, because a leading dash means "no subcommand,
+serve".
+
+- `migrate` opens the database the same way the server does and applies every
+  pending migration, then verifies the schema landed at the version this
+  binary expects.
+- `migrate status` reports the driver, the current and expected versions, and
+  the dirty flag, without applying anything — which is what makes it usable as
+  a gate in a pipeline or an init container.
+- `migrate force <n>` only records version `n` and clears the dirty flag; it
+  does not touch the schema itself. Use it after fixing whatever
+  golang-migrate left half-applied, never as a substitute for that fix.
+
+Exit codes are shared across the three, not owned by `status`:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | it did what it was asked |
+| `1` | it failed; `status` also exits 1 when the schema is merely behind |
+| `2` | a malformed command line, or a dirty schema, from `migrate` or `migrate status` |
+
+The dirty schema is the reason 2 is not `status`'s alone. A failed migration
+needs an operator and not a retry, whichever of those two ran into it, so a
+pipeline can branch on 2 without caring which one it invoked. `migrate force`
+never reports it: clearing that flag is the whole job.
+
+Each subcommand runs the whole configuration builder, not just the database
+section, so `aegisd migrate --dev` needs to be as complete a command line as
+`aegisd --dev` would be to serve.
+
+Once the schema is current and the server boots, the two profiles disagree on
+what a stale master realm issuer means. The development profile derives the
+issuer from the public url on every start and rewrites the stored one when
+they differ, because the public url there is just the listener address, and a
+changed port would otherwise leave a stale issuer with no symptom pointing at
+the cause. Production refuses to boot on the same disagreement instead: every
+client validates the issuer byte for byte, so serving two different ones
+silently is worse than not starting.
+
 ## Tests
 
 ```sh

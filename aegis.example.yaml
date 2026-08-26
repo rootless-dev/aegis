@@ -158,6 +158,20 @@ database:
     conn_max_lifetime: 30m
     conn_max_idle_time: 5m
 
+  # How the schema reaches the version this binary carries.
+  migrate:
+    # Applies pending migrations during startup. Turning it off does not turn
+    # off the version check: the boot still refuses a schema older than the
+    # binary. Use `aegisd migrate` — an init container or a pipeline step —
+    # when you want the work outside the pod's startup path.
+    on_boot: true
+    # Bounds how long new migrations keep being started. One already running
+    # is always allowed to finish. Keep the k8s startupProbe budget above this.
+    timeout: 5m
+    # How long to wait for another replica to finish migrating. Zero is not
+    # "wait forever": it leaves golang-migrate's own default of 15s in place.
+    lock_timeout: 0s
+
 graceful:
   # Whole shutdown budget, shared by every pending. Must fit the window the
   # orchestrator allows between SIGTERM and SIGKILL.

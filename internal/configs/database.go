@@ -83,6 +83,8 @@ type Database struct {
 	ConnectTimeout time.Duration `yaml:"connect_timeout"`
 
 	Pool *Pool `yaml:"pool"`
+
+	Migrate *Migrate `yaml:"migrate"`
 }
 
 type Pool struct {
@@ -107,6 +109,7 @@ func defaultDatabase() *Database {
 		Driver:         "",
 		ConnectTimeout: 10 * time.Second,
 		Pool:           defaultPool(),
+		Migrate:        defaultMigrate(),
 	}
 }
 
@@ -153,6 +156,12 @@ func (cfg *Database) Validate(profile Profile) error {
 		errs = append(errs, errors.New("database: pool configuration is missing"))
 	} else {
 		errs = append(errs, cfg.Pool.Validate())
+	}
+
+	if cfg.Migrate == nil {
+		errs = append(errs, errors.New("database: migrate configuration is missing"))
+	} else {
+		errs = append(errs, cfg.Migrate.Validate())
 	}
 
 	return errors.Join(errs...)

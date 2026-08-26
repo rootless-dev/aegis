@@ -59,6 +59,11 @@ func Open(opts Options) (*DB, error) {
 		// GORM otherwise wraps every write in a transaction of its own, a round
 		// trip per statement; what needs atomicity will ask for it.
 		SkipDefaultTransaction: true,
+		// A nested transaction joins the outer one instead of opening a
+		// savepoint, leaving the outermost as the only rollback boundary. A
+		// savepoint would undo the inner work behind the caller's back and let
+		// the outer unit commit anyway — a half-built aggregate.
+		DisableNestedTransaction: true,
 	})
 	if err != nil {
 		// gorm.Open pings unless told not to, so an unreachable server fails

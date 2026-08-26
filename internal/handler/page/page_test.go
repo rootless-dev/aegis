@@ -146,7 +146,7 @@ func TestLandingRendersHTML(t *testing.T) {
 	}
 
 	// The landing model's own fields, rendered through the landing template.
-	for _, want := range []string{"<h1>Aegis</h1>", "Identity for every tenant."} {
+	for _, want := range []string{"<h1>Aegis</h1>", "Identity for every realm."} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the landing page is missing %q:\n%s", want, body)
 		}

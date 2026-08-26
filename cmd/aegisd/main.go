@@ -6,6 +6,7 @@ import (
 
 	"github.com/phuslu/log"
 	"github.com/rootless-dev/aegis/internal/application"
+	"github.com/rootless-dev/aegis/internal/cli"
 	"github.com/rootless-dev/aegis/internal/infra/configbuilder"
 
 	// Reads .env into the environment on init, before any configuration is
@@ -14,15 +15,22 @@ import (
 )
 
 // main keeps the single exit point of the process. Everything else lives in run
-// so that deferred calls still happen: os.Exit, which Fatal ends up calling,
-// skips them.
+// so that deferred calls still happen — os.Exit skips them, which is why
+// nothing below this line may call it.
 func main() {
-	if err := run(); err != nil {
-		log.Fatal().Err(err).Msg("aegis exited with error")
-	}
+	os.Exit(run())
 }
 
-func run() error {
+func run() int {
+	handled, args, command, usageErr := cli.Dispatch(os.Args[1:])
+	if usageErr != nil {
+		fmt.Fprint(os.Stderr, usageErr)
+
+		// An argument error is not a configuration error: naming an unknown
+		// subcommand must not first require a reachable database.
+		return 2
+	}
+
 	// Layered on purpose, each one overwriting only what it declares: defaults
 	// are the base, the file is what ships with the image, the environment is
 	// how a single instance is adjusted without rebuilding anything, and the
@@ -31,18 +39,34 @@ func run() error {
 		WithDefaults().
 		WithYAML().
 		WithEnv().
-		WithFlags(os.Args[1:]).
+		WithFlags(args).
 		Normalize().
 		Validate().
 		Build()
 	if err != nil {
-		return fmt.Errorf("invalid configuration: %w", err)
+		return fail(fmt.Errorf("invalid configuration: %w", err))
+	}
+
+	// Subcommands validate the whole configuration, not just the database
+	// section: one that migrates but cannot boot is a trap.
+	if handled {
+		return command(cfg)
 	}
 
 	app, err := application.New(cfg)
 	if err != nil {
-		return fmt.Errorf("initialization failed: %w", err)
+		return fail(fmt.Errorf("initialization failed: %w", err))
 	}
 
-	return app.Run()
+	if err := app.Run(); err != nil {
+		return fail(err)
+	}
+
+	return 0
+}
+
+func fail(err error) int {
+	log.Error().Err(err).Msg("aegis exited with error")
+
+	return 1
 }

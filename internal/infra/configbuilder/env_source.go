@@ -139,6 +139,17 @@ func applyDatabase(cfg *configs.Database) {
 	durationFromEnv(&cfg.ConnectTimeout, "DATABASE_CONNECT_TIMEOUT")
 
 	applyDatabasePool(cfg.Pool)
+	applyDatabaseMigrate(cfg.Migrate)
+}
+
+func applyDatabaseMigrate(cfg *configs.Migrate) {
+	if cfg == nil {
+		return
+	}
+
+	fromEnv(&cfg.OnBoot, "DATABASE_MIGRATE_ON_BOOT")
+	durationFromEnv(&cfg.Timeout, "DATABASE_MIGRATE_TIMEOUT")
+	durationFromEnv(&cfg.LockTimeout, "DATABASE_MIGRATE_LOCK_TIMEOUT")
 }
 
 func applyDatabasePool(cfg *configs.Pool) {

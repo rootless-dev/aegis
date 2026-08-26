@@ -67,7 +67,7 @@ func sqliteDialector(dsn string) gorm.Dialector {
 // because glebarez, the obvious pairing, registers "sqlite" too and
 // database/sql panics on the collision; gorm.io/driver/sqlite needs cgo.
 func sqliteMigrator(db *sql.DB) (migratedb.Driver, error) {
-	return sqlitemigrate.WithInstance(db, &sqlitemigrate.Config{})
+	return sqlitemigrate.WithInstance(db, &sqlitemigrate.Config{MigrationsTable: migrationsTable})
 }
 
 // sqliteSingleWriter collapses the pool: SQLite serialises writes over the

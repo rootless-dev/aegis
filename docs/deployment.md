@@ -68,6 +68,37 @@ point `TLS_CERT_FILE` and `TLS_KEY_FILE` at the mounted files and leave
 `TLS_RELOAD_INTERVAL` alone: the files are rewritten in place on renewal and are
 picked up without restarting the pod.
 
+### Changing the public url
+
+`PUBLIC_URL` is where the master realm's issuer came from, but only once: the
+issuer was derived at creation and stored, and nothing derives it again on the
+read path. Under the production profile a boot that derives a different issuer
+than the one stored refuses to start, on every replica at once — every client
+validates the `iss` claim byte for byte, and serving two of them silently is
+worse than not serving.
+
+So moving the deployment to a new hostname is two steps, not one. Changing
+`PUBLIC_URL` alone takes the whole installation down.
+
+If the new hostname is a mistake, the fix is to put `PUBLIC_URL` back. If the
+move is deliberate, stop every instance and rewrite the stored issuer against
+the database:
+
+```sql
+UPDATE realms SET issuer = 'https://new-host.example.com/realms/master'
+WHERE slug = 'master';
+```
+
+There is no subcommand for this yet, and it is not something a migration can
+do: migrations are versioned, embedded in the binary and identical on every
+installation, and the new issuer is particular to this one.
+
+It also has a cost worth knowing before running it rather than after. Every
+token already issued under the old issuer becomes unverifiable — clients reject
+the `iss` claim they were given — and every cached discovery document a client
+holds is wrong until it refetches. Plan it as a rotation, in a window, not as a
+configuration tweak.
+
 ### Timings that have to stay in step
 
 ```
@@ -87,6 +118,42 @@ The configuration refuses to boot when the drain delay is not shorter than the
 graceful timeout. The relation with `terminationGracePeriodSeconds` lives in the
 manifest and is not verifiable from inside the process — keep them aligned by
 hand.
+
+## Migrations
+
+There are two shapes for bringing the schema up, chosen with
+`DATABASE_MIGRATE_ON_BOOT`.
+
+The default, `true`, migrates during `setSchema` before the process starts
+serving. This suits a single process: nothing else needs to run, and the
+schema is always current when the first request lands. It also means the pod
+that happens to win the race applies the migration, so it is not a fit for
+more than one replica starting from an old schema at the same time.
+
+Setting `DATABASE_MIGRATE_ON_BOOT=false` and running `aegisd migrate` in an
+init container or a Job moves that work out of the pod's startup path
+entirely: the schema lands once, before any replica starts, and `setSchema`
+still checks the version on every boot regardless of `ON_BOOT`, so a replica
+that starts against a schema still behind refuses rather than serving.
+
+Either way, the `startupProbe`'s budget — `periodSeconds * failureThreshold`,
+six minutes in `deploy/k8s/base/deployment.yaml` — is what keeps a probe from
+firing mid-migration, killing the process part-way through a DDL statement and
+leaving the schema dirty, which then needs a manual `aegisd migrate force` to
+clear.
+
+What that budget buys is headroom for a boot that applies many small
+migrations. It is not a bound on how long migrating takes, and it cannot be
+made into one: `database.migrate.timeout` bounds how long new migrations keep
+being *started*, and one already running is always allowed to finish. A single
+`CREATE INDEX` on a large table runs for as long as it runs, past any probe
+budget, and gets `SIGKILL`ed in the middle of the statement — the exact outcome
+the margin exists to avoid.
+
+That is the real argument for the init-container or Job shape on an
+installation with large tables. There, the migration is not on any pod's
+startup path, so no probe is watching it and it is allowed to take the time it
+needs.
 
 ## Releases
 

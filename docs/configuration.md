@@ -194,11 +194,14 @@ any other pragma is accepted. Being a map, `options` holds one `_pragma` entry
 and therefore one custom pragma — sqlite is there for a local run, and an
 installation that needs several is not what this key is for.
 
-Nothing migrates yet. The migration runner exists and is tested, but it has no
-caller during startup: there is no `migrate` configuration block, no
-`--skip-migrations` flag and nothing wired into the boot sequence. A reader who
-finds the runner in the code and no way to configure it has not missed
-anything — that wiring is future work, not a gap in this document.
+`database.migrate.on_boot` controls whether pending migrations are applied
+during startup; it defaults to `true`, since the reference installation is a
+single on-prem process where a two-step start would have to be read about to
+work at all. Setting it to `false` — or passing `--migrate-on-boot=false`,
+which wins over every other source — does not turn off the version check: the
+boot still refuses a schema older than the binary either way, and
+`aegisd migrate` is what applies the pending migrations when the startup path
+was told not to.
 
 ## Validation
 
@@ -266,6 +269,9 @@ both sources, because accepting it would silently mean nanoseconds.
 | `database.pool.max_idle` | `DATABASE_POOL_MAX_IDLE` | `25` |
 | `database.pool.conn_max_lifetime` | `DATABASE_POOL_CONN_MAX_LIFETIME` | `30m` |
 | `database.pool.conn_max_idle_time` | `DATABASE_POOL_CONN_MAX_IDLE_TIME` | `5m` |
+| `database.migrate.on_boot` | `DATABASE_MIGRATE_ON_BOOT` (or `--migrate-on-boot`) | `true` |
+| `database.migrate.timeout` | `DATABASE_MIGRATE_TIMEOUT` | `5m` |
+| `database.migrate.lock_timeout` | `DATABASE_MIGRATE_LOCK_TIMEOUT` | `0s`, which means golang-migrate's own default of 15s, not "no limit" |
 | `graceful.timeout` | `GRACEFUL_SHUTDOWN_TIMEOUT` | `20s` |
 | `health.check_timeout` | `HEALTH_CHECK_TIMEOUT` | `2s` |
 | `health.drain_delay` | `HEALTH_DRAIN_DELAY` | `5s` |
