@@ -17,6 +17,7 @@ import (
 	"github.com/rootless-dev/aegis/internal/infra/database"
 	"github.com/rootless-dev/aegis/internal/infra/graceful"
 	"github.com/rootless-dev/aegis/internal/infra/health"
+	"github.com/rootless-dev/aegis/internal/service"
 )
 
 var ErrConfigurationIsNil = errors.New("application: configuration is nil")
@@ -27,6 +28,8 @@ type Application struct {
 	graceful *graceful.Graceful
 	health   *health.Health
 	database *database.DB
+
+	realms *service.RealmService
 
 	// router is what the server serves; surfaces is the group carrying the full
 	// middleware chain, and is where each area mounts its own routes so that
@@ -67,6 +70,8 @@ func New(cfg *configs.Application) (*Application, error) {
 		instance.setGraceful,
 		instance.setHealth,
 		instance.setDatabase,
+		instance.setSchema,
+		instance.setServices,
 		instance.setCertificates,
 		instance.setWeb,
 		instance.setRouter,
@@ -97,6 +102,10 @@ func (app *Application) Shutdown(ctx context.Context) error {
 
 	return app.database.Shutdown(ctx)
 }
+
+// Database exposes the pool for tests and for nothing else: no production code
+// reaches past the services for it.
+func (app *Application) Database() *database.DB { return app.database }
 
 // Run starts the application resources and blocks until shutdown is requested,
 // either by a system signal or by a fatal failure of one of the resources.

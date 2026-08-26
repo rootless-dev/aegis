@@ -122,13 +122,24 @@ spec:
             failureThreshold: 2
 
           # Covers a slow start without making the liveness threshold generous
-          # for the whole life of the pod.
+          # for the whole life of the pod. Six minutes of budget —
+          # periodSeconds times failureThreshold — buys headroom for a boot
+          # that applies many small migrations without a probe firing mid-DDL
+          # and leaving the schema dirty.
+          #
+          # It is not a bound on how long migrating takes, and no probe budget
+          # can be: database.migrate.timeout stops new migrations from being
+          # started, but one already running always finishes, so a single
+          # CREATE INDEX on a large table outlives any threshold set here and
+          # is SIGKILLed part-way through. That is the argument for migrating
+          # in an init container or a Job on installations with large tables,
+          # not for a larger number below.
           startupProbe:
             httpGet:
               path: /livez
               port: http
             periodSeconds: 2
-            failureThreshold: 30
+            failureThreshold: 180
 
           resources:
             requests:
