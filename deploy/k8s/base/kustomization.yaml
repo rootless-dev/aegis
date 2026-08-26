@@ -15,4 +15,4 @@ resources:
 # to each and they cannot drift apart.
 images:
   - name: aegis
-    newTag: 0.0.4 # x-release-please-version
+    newTag: 0.0.5 # x-release-please-version
