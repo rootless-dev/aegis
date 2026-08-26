@@ -58,7 +58,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build \
       -trimpath \
       -ldflags="-s -w -X github.com/rootless-dev/aegis/internal/buildinfo.version=${VERSION}" \
-      -o /out/aegisd ./cmd/server
+      -o /out/aegisd ./cmd/aegisd
 
 # What every environment runs: no shell, no package manager, non-root.
 FROM gcr.io/distroless/static-debian12:nonroot AS production
