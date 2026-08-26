@@ -285,44 +285,56 @@ func TestEnsureMasterAdoptsTheRowAnotherReplicaSeeded(t *testing.T) {
 func TestTheAdoptedRowIsReconciledLikeAnyOther(t *testing.T) {
 	for named, collision := range seedCollisions {
 		t.Run(named+"/production refuses a divergent issuer", func(t *testing.T) {
-			svc, repo := racing(
-				t, "https://idp.moved.example.com", "https://idp.example.com/realms/master", collision,
-			)
-
-			_, err := svc.EnsureMaster(t.Context(), false)
-			if err == nil {
-				t.Fatal("a divergent issuer must refuse the boot outside development, adopted row or not")
-			}
-
-			// Named explicitly, or this passes on the seed race failing rather
-			// than on the reconciliation refusing, which is the whole point.
-			if errors.Is(err, collision) || !strings.Contains(err.Error(), "idp.moved.example.com/realms/master") {
-				t.Errorf("the refusal must be the issuer check, got %v", err)
-			}
-
-			if len(repo.reissued) != 0 {
-				t.Error("production must not rewrite the issuer")
-			}
+			assertAdoptedRowRefusedInProduction(t, collision)
 		})
 
 		t.Run(named+"/development rewrites a divergent issuer", func(t *testing.T) {
-			svc, repo := racing(
-				t, "https://idp.moved.example.com", "https://idp.example.com/realms/master", collision,
-			)
-
-			r, err := svc.EnsureMaster(t.Context(), true)
-			if err != nil {
-				t.Fatalf("development must rewrite rather than refuse, got %v", err)
-			}
-
-			if want := "https://idp.moved.example.com/realms/master"; r.Issuer() != want {
-				t.Errorf("issuer: want %q, got %q", want, r.Issuer())
-			}
-
-			if len(repo.reissued) != 1 {
-				t.Error("development must go through Reissue")
-			}
+			assertAdoptedRowRewrittenInDevelopment(t, collision)
 		})
+	}
+}
+
+func assertAdoptedRowRefusedInProduction(t *testing.T, collision error) {
+	t.Helper()
+
+	svc, repo := racing(
+		t, "https://idp.moved.example.com", "https://idp.example.com/realms/master", collision,
+	)
+
+	_, err := svc.EnsureMaster(t.Context(), false)
+	if err == nil {
+		t.Fatal("a divergent issuer must refuse the boot outside development, adopted row or not")
+	}
+
+	// Named explicitly, or this passes on the seed race failing rather than on
+	// the reconciliation refusing, which is the whole point.
+	if errors.Is(err, collision) || !strings.Contains(err.Error(), "idp.moved.example.com/realms/master") {
+		t.Errorf("the refusal must be the issuer check, got %v", err)
+	}
+
+	if len(repo.reissued) != 0 {
+		t.Error("production must not rewrite the issuer")
+	}
+}
+
+func assertAdoptedRowRewrittenInDevelopment(t *testing.T, collision error) {
+	t.Helper()
+
+	svc, repo := racing(
+		t, "https://idp.moved.example.com", "https://idp.example.com/realms/master", collision,
+	)
+
+	r, err := svc.EnsureMaster(t.Context(), true)
+	if err != nil {
+		t.Fatalf("development must rewrite rather than refuse, got %v", err)
+	}
+
+	if want := "https://idp.moved.example.com/realms/master"; r.Issuer() != want {
+		t.Errorf("issuer: want %q, got %q", want, r.Issuer())
+	}
+
+	if len(repo.reissued) != 1 {
+		t.Error("development must go through Reissue")
 	}
 }
 

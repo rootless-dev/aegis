@@ -10,6 +10,9 @@ import (
 	"gorm.io/gorm"
 )
 
+// whereID is the predicate every single-row operation in this file shares.
+const whereID = "id = ?"
+
 type realmRepository struct {
 	db *gorm.DB
 }
@@ -25,7 +28,7 @@ func (r realmRepository) FindByID(ctx context.Context, id uuid.UUID) (*realm.Rea
 		return nil, realm.ErrIDInvalid
 	}
 
-	return r.first(ctx, "id = ?", id.String())
+	return r.first(ctx, whereID, id.String())
 }
 
 func (r realmRepository) FindBySlug(ctx context.Context, slug string) (*realm.Realm, error) {
@@ -94,7 +97,7 @@ func (r realmRepository) List(ctx context.Context, q service.RealmQuery) ([]*rea
 func (r realmRepository) Update(ctx context.Context, aggregate *realm.Realm) error {
 	result := r.db.WithContext(ctx).
 		Model(&realmRecord{}).
-		Where("id = ?", aggregate.ID().String()).
+		Where(whereID, aggregate.ID().String()).
 		Updates(map[string]any{
 			"display_name": aggregate.DisplayName(),
 			"status":       aggregate.Status().String(),
@@ -118,7 +121,7 @@ func (r realmRepository) Update(ctx context.Context, aggregate *realm.Realm) err
 func (r realmRepository) Reissue(ctx context.Context, id uuid.UUID, issuer string) error {
 	result := r.db.WithContext(ctx).
 		Model(&realmRecord{}).
-		Where("id = ?", id.String()).
+		Where(whereID, id.String()).
 		Updates(map[string]any{
 			"issuer":     issuer,
 			"updated_at": Timestamp(nowUTC()),

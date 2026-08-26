@@ -44,8 +44,7 @@ func run() int {
 		Validate().
 		Build()
 	if err != nil {
-		log.Error().Err(fmt.Errorf("invalid configuration: %w", err)).Msg("aegis exited with error")
-		return 1
+		return fail(fmt.Errorf("invalid configuration: %w", err))
 	}
 
 	// Subcommands validate the whole configuration, not just the database
@@ -56,14 +55,18 @@ func run() int {
 
 	app, err := application.New(cfg)
 	if err != nil {
-		log.Error().Err(fmt.Errorf("initialization failed: %w", err)).Msg("aegis exited with error")
-		return 1
+		return fail(fmt.Errorf("initialization failed: %w", err))
 	}
 
 	if err := app.Run(); err != nil {
-		log.Error().Err(err).Msg("aegis exited with error")
-		return 1
+		return fail(err)
 	}
 
 	return 0
+}
+
+func fail(err error) int {
+	log.Error().Err(err).Msg("aegis exited with error")
+
+	return 1
 }

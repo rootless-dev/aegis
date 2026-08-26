@@ -86,31 +86,37 @@ func TestEveryDialectCarriesTheSameVersions(t *testing.T) {
 // on the two an on-prem customer is most likely to run.
 func TestEveryMigrationHoldsExactlyOneStatement(t *testing.T) {
 	for _, dialect := range dialects {
-		tree, err := migrations.For(dialect)
+		assertOneStatementEach(t, dialect)
+	}
+}
+
+func assertOneStatementEach(t *testing.T, dialect string) {
+	t.Helper()
+
+	tree, err := migrations.For(dialect)
+	if err != nil {
+		t.Fatalf("%s: %v", dialect, err)
+	}
+
+	entries, err := fs.ReadDir(tree, ".")
+	if err != nil {
+		t.Fatalf("%s: %v", dialect, err)
+	}
+
+	for _, entry := range entries {
+		body, err := fs.ReadFile(tree, entry.Name())
 		if err != nil {
-			t.Fatalf("%s: %v", dialect, err)
+			t.Fatalf("%s/%s: %v", dialect, entry.Name(), err)
 		}
 
-		entries, err := fs.ReadDir(tree, ".")
-		if err != nil {
-			t.Fatalf("%s: %v", dialect, err)
+		statement := stripComments(string(body))
+
+		if count := strings.Count(statement, ";"); count != 1 {
+			t.Errorf("%s/%s: want exactly one statement, found %d semicolons", dialect, entry.Name(), count)
 		}
 
-		for _, entry := range entries {
-			body, err := fs.ReadFile(tree, entry.Name())
-			if err != nil {
-				t.Fatalf("%s/%s: %v", dialect, entry.Name(), err)
-			}
-
-			statement := stripComments(string(body))
-
-			if count := strings.Count(statement, ";"); count != 1 {
-				t.Errorf("%s/%s: want exactly one statement, found %d semicolons", dialect, entry.Name(), count)
-			}
-
-			if !strings.HasSuffix(statement, ";") {
-				t.Errorf("%s/%s: the statement must end at the last semicolon", dialect, entry.Name())
-			}
+		if !strings.HasSuffix(statement, ";") {
+			t.Errorf("%s/%s: the statement must end at the last semicolon", dialect, entry.Name())
 		}
 	}
 }
