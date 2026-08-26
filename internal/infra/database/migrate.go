@@ -22,13 +22,22 @@ type MigrateOptions struct {
 	Timeout time.Duration
 
 	// LockTimeout is how long to wait for another replica to finish migrating.
-	// Zero leaves golang-migrate's own default.
+	// Zero leaves golang-migrate's default of 15 seconds — a limit, not the
+	// absence of one.
 	LockTimeout time.Duration
 }
 
 // errNoUpMigrations separates an empty source from a source that failed to be
 // read, which must not be reported as if it were empty.
 var errNoUpMigrations = errors.New("no migration in the source has an up direction")
+
+// ErrSchemaBehind is typed because the boot and the CLI both branch on it.
+var ErrSchemaBehind = errors.New("database: the schema is behind this binary")
+
+// Namespaced rather than golang-migrate's schema_migrations default: on-prem,
+// a neighbouring application using the same library would have aegis read its
+// version and apply nothing, silently.
+const migrationsTable = "aegis_schema_migrations"
 
 // SchemaDirtyError reports the flag golang-migrate sets before running a
 // migration and clears after it. Typed because it is the one failure here that
@@ -38,14 +47,12 @@ type SchemaDirtyError struct {
 	Driver  Driver
 }
 
-// Names no command: the subcommand that would run the recovery does not exist
-// yet, and pointing an operator at one mid-incident is worse than not naming it.
 func (e *SchemaDirtyError) Error() string {
 	return fmt.Sprintf(
 		"database: the %s schema is dirty at version %d: a migration failed and this package cannot tell "+
 			"from here whether it left a partial change behind. "+
 			"Inspect the schema and finish or undo version %d by hand; the recorded version has to be forced "+
-			"back to a clean state before this instance will start",
+			"back to a clean state with `aegisd migrate force <version>` before this instance will start",
 		e.Driver, e.Version, e.Version,
 	)
 }
@@ -107,6 +114,35 @@ func (db *DB) SchemaVersion(_ context.Context) (uint, bool, error) {
 	defer closeMigrator()
 
 	return readVersion(migrator)
+}
+
+// VerifySchema compares the recorded version against what the caller carries.
+// A schema ahead is tolerated: during a rolling update the previous binary runs
+// beside the new one, and refusing an unrecognised version would remove the
+// ability to roll back.
+//
+// The context reaches SchemaVersion, which has nothing to do with it —
+// golang-migrate's version read takes none. It is threaded anyway so the
+// caller's deadline is not discarded here, of all places.
+func (db *DB) VerifySchema(ctx context.Context, expected uint) error {
+	version, dirty, err := db.SchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+
+	if dirty {
+		return &SchemaDirtyError{Version: version, Driver: db.Driver}
+	}
+
+	if version < expected {
+		return fmt.Errorf(
+			"%w: the database is at version %d and this binary carries %d. "+
+				"Run `aegisd migrate` against this database, or start with migration on boot enabled",
+			ErrSchemaBehind, version, expected,
+		)
+	}
+
+	return nil
 }
 
 // ForceVersion clears the dirty flag after a manual repair. It rewrites the

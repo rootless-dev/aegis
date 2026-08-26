@@ -24,9 +24,11 @@ import (
 const (
 	defaultMySQLPort = "3306"
 
-	// The floors: CTEs and window functions on MySQL 8, and stable utf8mb4
-	// behaviour on MariaDB 10.6.
+	// MySQL parses and silently discards CHECK below 8.0.16, and the realms
+	// status column depends on one. MariaDB 10.6 is for stable utf8mb4.
 	minimumMySQLMajor   = 8
+	minimumMySQLMinor   = 0
+	minimumMySQLPatch   = 16
 	minimumMariaDBMajor = 10
 	minimumMariaDBMinor = 6
 )
@@ -198,7 +200,7 @@ func mysqlDialector(dsn string) gorm.Dialector {
 }
 
 func mysqlMigrator(db *sql.DB) (migratedb.Driver, error) {
-	return mysqlmigrate.WithInstance(db, &mysqlmigrate.Config{})
+	return mysqlmigrate.WithInstance(db, &mysqlmigrate.Config{MigrationsTable: migrationsTable})
 }
 
 func mysqlVersion(ctx context.Context, db *sql.DB) (string, error) {
@@ -218,13 +220,19 @@ func checkMySQLVersion(raw string) error {
 		return fmt.Errorf("database: driver is %q but the server reports %q, declare %q instead", DriverMySQL, raw, DriverMariaDB)
 	}
 
-	major, _, err := parseVersion(raw)
+	major, minor, patch, err := parseVersion(raw)
 	if err != nil {
 		return err
 	}
 
-	if major < minimumMySQLMajor {
-		return fmt.Errorf("database: mysql %s is below the minimum supported version %d.0", raw, minimumMySQLMajor)
+	if major < minimumMySQLMajor ||
+		(major == minimumMySQLMajor && minor < minimumMySQLMinor) ||
+		(major == minimumMySQLMajor && minor == minimumMySQLMinor && patch < minimumMySQLPatch) {
+		return fmt.Errorf(
+			"database: mysql %s is below the minimum supported version %d.%d.%d, "+
+				"where CHECK constraints stop being silently ignored",
+			raw, minimumMySQLMajor, minimumMySQLMinor, minimumMySQLPatch,
+		)
 	}
 
 	return nil
@@ -245,7 +253,7 @@ func checkMariaDBVersion(raw string) error {
 		return fmt.Errorf("database: driver is %q but the server reports %q, declare %q instead", DriverMariaDB, raw, DriverMySQL)
 	}
 
-	major, minor, err := parseVersion(raw)
+	major, minor, _, err := parseVersion(raw)
 	if err != nil {
 		return err
 	}
@@ -270,19 +278,21 @@ func serverVersion(ctx context.Context, db *sql.DB) (string, error) {
 	return version, nil
 }
 
-// parseVersion reads the leading major.minor of strings like "8.0.36" and
-// "10.6.16-MariaDB-1:10.6.16+maria~ubu2004". The "5.5.5-" some MariaDB builds
-// prefix is a compatibility marker for old clients; left in place it reads as
-// MySQL 5.5 and gets rejected as below the floor.
-func parseVersion(raw string) (int, int, error) {
-	fail := func() (int, int, error) {
-		return 0, 0, fmt.Errorf("database: cannot read a version out of %q", raw)
+// parseVersion reads the leading major.minor.patch of strings like "8.0.36"
+// and "10.6.16-MariaDB-1:10.6.16+maria~ubu2004". The "5.5.5-" prefix some
+// MariaDB builds carry is a compatibility marker; left in place it reads as
+// MySQL 5.5 and is rejected as below the floor.
+//
+// A missing patch is an error rather than zero, so "8.0" cannot pass as 8.0.0.
+func parseVersion(raw string) (int, int, int, error) {
+	fail := func() (int, int, int, error) {
+		return 0, 0, 0, fmt.Errorf("database: cannot read a version out of %q", raw)
 	}
 
 	trimmed := strings.TrimPrefix(raw, "5.5.5-")
 
 	parts := strings.SplitN(trimmed, ".", 3)
-	if len(parts) < 2 {
+	if len(parts) < 3 {
 		return fail()
 	}
 
@@ -296,5 +306,10 @@ func parseVersion(raw string) (int, int, error) {
 		return fail()
 	}
 
-	return major, minor, nil
+	patch, err := strconv.Atoi(strings.SplitN(parts[2], "-", 2)[0])
+	if err != nil {
+		return fail()
+	}
+
+	return major, minor, patch, nil
 }

@@ -95,7 +95,7 @@ func postgresDialector(dsn string) gorm.Dialector {
 }
 
 func postgresMigrator(db *sql.DB) (migratedb.Driver, error) {
-	return pgmigrate.WithInstance(db, &pgmigrate.Config{})
+	return pgmigrate.WithInstance(db, &pgmigrate.Config{MigrationsTable: migrationsTable})
 }
 
 func postgresVersion(ctx context.Context, db *sql.DB) (string, error) {

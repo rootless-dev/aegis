@@ -465,7 +465,7 @@ func TestADirtySchemaIsRefusedWithAnActionableError(t *testing.T) {
 		t.Fatalf("migrating: %v", err)
 	}
 
-	if _, err := db.SQL.ExecContext(context.Background(), "UPDATE schema_migrations SET dirty = 1"); err != nil {
+	if _, err := db.SQL.ExecContext(context.Background(), "UPDATE aegis_schema_migrations SET dirty = 1"); err != nil {
 		t.Fatalf("marking the schema dirty: %v", err)
 	}
 
@@ -477,10 +477,8 @@ func TestADirtySchemaIsRefusedWithAnActionableError(t *testing.T) {
 	}
 
 	// What the message has to carry is the version an operator repairs by hand
-	// and the fact that the flag has to be cleared afterwards. It deliberately
-	// names no command: the subcommand that would run the recovery is not part
-	// of this phase.
-	for _, want := range []string{"dirty at version 2", "by hand", "forced"} {
+	// and the command that clears the flag afterwards.
+	for _, want := range []string{"dirty at version 2", "by hand", "aegisd migrate force"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected the error to be actionable and mention %q, got %v", want, err)
 		}
@@ -504,7 +502,7 @@ func TestForceVersionClearsTheDirtyFlag(t *testing.T) {
 		t.Fatalf("reading the schema version: %v", err)
 	}
 
-	if _, err := db.SQL.ExecContext(context.Background(), "UPDATE schema_migrations SET dirty = 1"); err != nil {
+	if _, err := db.SQL.ExecContext(context.Background(), "UPDATE aegis_schema_migrations SET dirty = 1"); err != nil {
 		t.Fatalf("marking the schema dirty: %v", err)
 	}
 
@@ -531,5 +529,137 @@ func TestSchemaVersionRefusesAnUnknownDriver(t *testing.T) {
 	_, _, err := db.SchemaVersion(context.Background())
 	if !errors.Is(err, ErrUnsupportedDriver) {
 		t.Fatalf("expected ErrUnsupportedDriver, got %v", err)
+	}
+}
+
+func TestVerifySchemaAcceptsAnEqualVersion(t *testing.T) {
+	db, err := Open(sqliteOptions(t))
+	if err != nil {
+		t.Fatalf("opening the database: %v", err)
+	}
+
+	t.Cleanup(func() { _ = db.Shutdown(context.Background()) })
+
+	if err := db.Migrate(context.Background(), sqliteFixtures(), migrateOptions()); err != nil {
+		t.Fatalf("migrating: %v", err)
+	}
+
+	// sqliteFixtures carries two migrations.
+	if err := db.VerifySchema(context.Background(), 2); err != nil {
+		t.Errorf("an equal version must be accepted, got %v", err)
+	}
+}
+
+// Refusing here is the whole point: without it, a binary whose migration was
+// skipped serves requests until the first query touches a column that is not
+// there.
+func TestVerifySchemaRefusesASchemaBehind(t *testing.T) {
+	db, err := Open(sqliteOptions(t))
+	if err != nil {
+		t.Fatalf("opening the database: %v", err)
+	}
+
+	t.Cleanup(func() { _ = db.Shutdown(context.Background()) })
+
+	err = db.VerifySchema(context.Background(), 3)
+	if err == nil {
+		t.Fatal("an empty database is behind version 3 and must be refused")
+	}
+
+	if !errors.Is(err, ErrSchemaBehind) {
+		t.Errorf("want ErrSchemaBehind, got %v", err)
+	}
+
+	// The operator has to learn both numbers and the way out, or the message
+	// sends them reading source mid-incident.
+	for _, want := range []string{"3", "aegisd migrate"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// During a rolling update the old binary runs beside the new one, which has
+// already migrated. An old binary that refuses a version it does not know
+// makes rollback impossible exactly when it is needed.
+func TestVerifySchemaToleratesASchemaAhead(t *testing.T) {
+	db, err := Open(sqliteOptions(t))
+	if err != nil {
+		t.Fatalf("opening the database: %v", err)
+	}
+
+	t.Cleanup(func() { _ = db.Shutdown(context.Background()) })
+
+	if err := db.Migrate(context.Background(), sqliteFixtures(), migrateOptions()); err != nil {
+		t.Fatalf("migrating: %v", err)
+	}
+
+	if err := db.VerifySchema(context.Background(), 1); err != nil {
+		t.Errorf("a schema ahead must be tolerated, got %v", err)
+	}
+}
+
+// A dirty flag outranks the version comparison: a half-applied migration is
+// not something a version number can describe.
+func TestVerifySchemaRefusesADirtySchema(t *testing.T) {
+	db, err := Open(sqliteOptions(t))
+	if err != nil {
+		t.Fatalf("opening the database: %v", err)
+	}
+
+	t.Cleanup(func() { _ = db.Shutdown(context.Background()) })
+
+	if err := db.Migrate(context.Background(), sqliteFixtures(), migrateOptions()); err != nil {
+		t.Fatalf("migrating: %v", err)
+	}
+
+	// ForceVersion is the only supported way to clear the flag, so it cannot
+	// be used to set one. Writing the control row directly is what a
+	// half-applied migration leaves behind.
+	if _, err := db.SQL.ExecContext(context.Background(),
+		`UPDATE aegis_schema_migrations SET dirty = 1`); err != nil {
+		t.Fatalf("marking the schema dirty: %v", err)
+	}
+
+	err = db.VerifySchema(context.Background(), 2)
+
+	dirty := &SchemaDirtyError{}
+	if !errors.As(err, &dirty) {
+		t.Fatalf("want SchemaDirtyError, got %v", err)
+	}
+}
+
+// schema_migrations is the golang-migrate default and is shared with Rails and
+// with every other golang-migrate project. In a customer database aegis shares
+// with another application, a neighbour using the same table is not an error —
+// aegis reads their version, decides it is up to date, and creates nothing.
+func TestTheControlTableIsNamespaced(t *testing.T) {
+	db, err := Open(sqliteOptions(t))
+	if err != nil {
+		t.Fatalf("opening the database: %v", err)
+	}
+
+	t.Cleanup(func() { _ = db.Shutdown(context.Background()) })
+
+	if err := db.Migrate(context.Background(), sqliteFixtures(), migrateOptions()); err != nil {
+		t.Fatalf("migrating: %v", err)
+	}
+
+	var name string
+
+	err = db.SQL.QueryRowContext(context.Background(),
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'aegis_schema_migrations'`,
+	).Scan(&name)
+	if err != nil {
+		t.Fatalf("the control table must be aegis_schema_migrations: %v", err)
+	}
+
+	var stray string
+
+	err = db.SQL.QueryRowContext(context.Background(),
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`,
+	).Scan(&stray)
+	if err == nil {
+		t.Error("the library default table must not be created")
 	}
 }
