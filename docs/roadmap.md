@@ -10,12 +10,18 @@ request correlation, ordered graceful shutdown with readiness draining, health
 probes with a check registry, the OAuth 2 error response format, build identity
 stamped into the binary, container images, Kubernetes manifests and CI.
 
-Persistence is not started, and it is the prerequisite for phase 1.
+Persistence followed it: a connection layer over Postgres, MySQL, MariaDB and
+SQLite, and a server-rendered page surface with its own asset pipeline.
 
 ## Phase 1 — core identity
 
 The smallest thing that is already an identity provider: it authenticates and
 issues a verifiable token.
+
+Landed so far: schema migration on boot with a version check, the `realms` table
+across the four dialects, the realm aggregate with the service and repository
+around it, a `master` realm seeded idempotently, and an `aegisd migrate`
+subcommand for migrating outside the boot. Everything below is still ahead.
 
 - `realm` as the isolation boundary, with its own issuer and signing keys
 - `identity` scoped to a realm, unique per realm rather than globally
