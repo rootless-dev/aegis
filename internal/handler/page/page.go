@@ -45,7 +45,7 @@ type errorModel struct {
 func (h *Handler) Landing(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, http.StatusOK, landingTemplate, landingModel{
 		Title:   "Aegis",
-		Tagline: "Identity for every tenant.",
+		Tagline: "Identity for every realm.",
 	})
 }
 
