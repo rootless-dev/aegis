@@ -4,7 +4,7 @@ tmp_dir = "tmp"
 [build]
   # -N disables optimisation and -l disables inlining: without both, delve puts
   # breakpoints on lines other than the ones you set.
-  cmd = "make assets && go build -gcflags='all=-N -l' -o ./tmp/aegisd ./cmd/server"
+  cmd = "make assets && go build -gcflags='all=-N -l' -o ./tmp/aegisd ./cmd/aegisd"
   bin = "./tmp/aegisd"
   # --continue starts the process without waiting for a debugger to attach, so
   # the service is usable even when nobody is debugging.

@@ -2,13 +2,15 @@
 
 A multi-tenant identity and access management service, written in Go.
 
-Every tenant is a **realm**: its own users, its own credentials, its own signing
-keys and its own issuer. An identity belongs to the realm that owns it, so the
-same email address may be two different people in two different realms.
+A **realm** is an isolated identity domain: its own users, its own credentials,
+its own signing keys and its own issuer. An identity belongs to the realm that
+owns it, so the same email address may be two different people in two different
+realms.
 
-> **Status: early.** The service boots, serves and shuts down correctly, but no
-> identity domain is implemented yet — there is no realm, user, credential or
-> token issuance. See the [roadmap](docs/roadmap.md).
+> **Status: early.** Realms exist: the schema is migrated on boot or by
+> `aegisd migrate`, and a `master` realm is seeded. Nothing identifies anyone
+> yet — no users, no credentials, no token issuance. See the
+> [roadmap](docs/roadmap.md).
 
 ## Requirements
 
@@ -28,6 +30,11 @@ The service listens on `:7500` and answers `/livez` and `/readyz`. `make run`
 uses the development profile, which serves plain HTTP, so reach it at
 `http://localhost:7500`. `TLS_TERMINATION=app` opts into HTTPS there, on a
 certificate generated in memory at every boot.
+
+The schema is migrated on boot by default, so an empty database needs nothing
+extra. With `DATABASE_MIGRATE_ON_BOOT=false` — the multi-replica setup — run
+`aegisd migrate` yourself first; a boot against a schema behind this binary is
+refused either way. See [docs/deployment.md](docs/deployment.md).
 
 ## Configuration
 

@@ -4,6 +4,8 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -43,7 +45,7 @@ func run(m *testing.M) (int, error) {
 
 	binaryPath = filepath.Join(dir, "aegisd")
 
-	build := exec.Command("go", "build", "-o", binaryPath, "./cmd/server")
+	build := exec.Command("go", "build", "-o", binaryPath, "./cmd/aegisd")
 	build.Dir = filepath.Join("..", "..")
 
 	if out, err := build.CombinedOutput(); err != nil {
@@ -228,4 +230,43 @@ func runBinaryToCompletion(t *testing.T, args, env []string) (string, error) {
 	out, err := cmd.CombinedOutput()
 
 	return string(out), err
+}
+
+// A migration that hangs must fail its test, not the whole suite.
+const commandTimeout = 60 * time.Second
+
+// runCommand runs the binary as a one-shot subcommand and returns its exit code
+// and combined output. Unlike runBinaryToCompletion, env is a full environment
+// in the shape launch builds, so a caller can pass the container's DATABASE_*
+// variables unchanged.
+func runCommand(t *testing.T, env []string, args ...string) (int, string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, args...)
+	cmd.Dir = t.TempDir()
+	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH")}, env...)
+
+	output, err := cmd.CombinedOutput()
+
+	if ctx.Err() != nil {
+		t.Fatalf("%v did not exit within %s:\n%s", args, commandTimeout, output)
+	}
+
+	if err == nil {
+		return 0, string(output)
+	}
+
+	// A non-zero exit is a result callers assert on, not a failure. Anything else
+	// could not be told apart from a real code, so it fails the test.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), string(output)
+	}
+
+	t.Fatalf("running %v: %v\n%s", args, err, output)
+
+	return 0, ""
 }

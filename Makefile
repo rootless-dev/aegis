@@ -58,11 +58,11 @@ help: ## Show this help
 # generated stylesheet, and this is the first command in the documentation.
 .PHONY: run
 run: assets ## Run the server from source, under the development profile
-	go run ./cmd/server --dev
+	go run ./cmd/aegisd --dev
 
 .PHONY: build
 build: assets ## Compile the server binary
-	go build -o $(BINARY) ./cmd/server
+	go build -o $(BINARY) ./cmd/aegisd
 
 .PHONY: assets
 assets: $(TAILWIND_BIN) ## Generate the stylesheet

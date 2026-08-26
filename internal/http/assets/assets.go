@@ -31,7 +31,7 @@ const (
 
 	// /favicon.ico is served as image/svg+xml, and an SVG navigated to directly
 	// is a document that can carry script — harmless for the icon committed
-	// here, wrong the day a tenant logo is served from the same code.
+	// here, wrong the day a realm logo is served from the same code.
 	//
 	// frame-ancestors is spelled out because it is one of the directives that
 	// does not fall back to default-src, and these routes bypass

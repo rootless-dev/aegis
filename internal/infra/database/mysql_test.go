@@ -475,31 +475,32 @@ func TestVersionParsing(t *testing.T) {
 	cases := map[string]struct {
 		major int
 		minor int
+		patch int
 	}{
-		"8.0.36":                              {8, 0},
-		"10.6.16-MariaDB-1:10.6.16+maria~ubu": {10, 6},
-		"5.7.44":                              {5, 7},
+		"8.0.36":                              {8, 0, 36},
+		"10.6.16-MariaDB-1:10.6.16+maria~ubu": {10, 6, 16},
+		"5.7.44":                              {5, 7, 44},
 		// MariaDB prefixes some builds with "5.5.5-" for backward compatibility
 		// with clients that only look at the first three tokens.
-		"5.5.5-10.6.16-MariaDB-1:10.6.16+maria~ubu2004": {10, 6},
+		"5.5.5-10.6.16-MariaDB-1:10.6.16+maria~ubu2004": {10, 6, 16},
 	}
 
 	for raw, wanted := range cases {
 		t.Run(raw, func(t *testing.T) {
-			major, minor, err := parseVersion(raw)
+			major, minor, patch, err := parseVersion(raw)
 			if err != nil {
 				t.Fatalf("parsing %q: %v", raw, err)
 			}
 
-			if major != wanted.major || minor != wanted.minor {
-				t.Fatalf("expected %d.%d, got %d.%d", wanted.major, wanted.minor, major, minor)
+			if major != wanted.major || minor != wanted.minor || patch != wanted.patch {
+				t.Fatalf("expected %d.%d.%d, got %d.%d.%d", wanted.major, wanted.minor, wanted.patch, major, minor, patch)
 			}
 		})
 	}
 }
 
 func TestParseVersionRejectsAnUnparseableString(t *testing.T) {
-	if _, _, err := parseVersion("not-a-version"); err == nil {
+	if _, _, _, err := parseVersion("not-a-version"); err == nil {
 		t.Fatal("expected an unparseable string to fail")
 	}
 }
@@ -507,7 +508,8 @@ func TestParseVersionRejectsAnUnparseableString(t *testing.T) {
 func TestCheckMySQLVersion(t *testing.T) {
 	cases := map[string]bool{ // raw server version -> whether it should be rejected
 		"7.9.99":                              true,  // below the floor
-		"8.0.0":                               false, // exactly the floor
+		"8.0.15":                              true,  // below the floor: CHECK is silently ignored
+		"8.0.16":                              false, // exactly the floor
 		"9.1.0":                               false, // above the floor
 		"10.6.16-MariaDB-1:10.6.16+maria~ubu": true,  // mysql declared, mariadb reports back
 		"not-a-version":                       true,  // unparseable
@@ -549,5 +551,43 @@ func TestCheckMariaDBVersion(t *testing.T) {
 				t.Fatalf("expected %q to be accepted, got %v", raw, err)
 			}
 		})
+	}
+}
+
+// MySQL parsed and then silently discarded CHECK constraints until 8.0.16: the
+// CREATE TABLE succeeds, the constraint does not exist, and nothing reports it.
+// The realms table relies on a CHECK for its status column, so 8.0 is no
+// longer a floor aegis can stand on.
+func TestMySQLFloorRequiresCheckConstraintSupport(t *testing.T) {
+	below := []string{"8.0.0", "8.0.15", "5.7.44"}
+	for _, raw := range below {
+		if err := checkMySQLVersion(raw); err == nil {
+			t.Errorf("%s is below 8.0.16 and must be refused", raw)
+		}
+	}
+
+	accepted := []string{"8.0.16", "8.0.36", "8.4.0", "9.1.0"}
+	for _, raw := range accepted {
+		if err := checkMySQLVersion(raw); err != nil {
+			t.Errorf("%s must be accepted, got %v", raw, err)
+		}
+	}
+}
+
+// A version with no patch component must not be read as patch zero and let
+// 8.0 through the 8.0.16 floor by accident.
+func TestMySQLVersionWithoutAPatchIsRefused(t *testing.T) {
+	if err := checkMySQLVersion("8.0"); err == nil {
+		t.Error("8.0 carries no patch level and cannot be shown to be at or above 8.0.16")
+	}
+}
+
+func TestMariaDBFloorIsUnchanged(t *testing.T) {
+	if err := checkMariaDBVersion("10.6.16-MariaDB-1:10.6.16+maria~ubu2004"); err != nil {
+		t.Errorf("10.6 must still be accepted, got %v", err)
+	}
+
+	if err := checkMariaDBVersion("10.5.20-MariaDB"); err == nil {
+		t.Error("10.5 must still be refused")
 	}
 }

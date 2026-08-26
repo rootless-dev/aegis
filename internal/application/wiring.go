@@ -1,10 +1,14 @@
 package application
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"html/template"
+	"net/url"
 
+	"github.com/phuslu/log"
+	"github.com/rootless-dev/aegis/internal/configs"
 	"github.com/rootless-dev/aegis/internal/handler/page"
 	"github.com/rootless-dev/aegis/internal/http/assets"
 	"github.com/rootless-dev/aegis/internal/http/render"
@@ -14,6 +18,9 @@ import (
 	"github.com/rootless-dev/aegis/internal/infra/graceful"
 	"github.com/rootless-dev/aegis/internal/infra/health"
 	"github.com/rootless-dev/aegis/internal/infra/logging"
+	"github.com/rootless-dev/aegis/internal/migrations"
+	"github.com/rootless-dev/aegis/internal/repository"
+	"github.com/rootless-dev/aegis/internal/service"
 	"github.com/rootless-dev/aegis/internal/templates"
 )
 
@@ -57,38 +64,44 @@ func (app *Application) setHealth() error {
 	return nil
 }
 
-// setDatabase opens the pool and registers the readiness check. Liveness never
-// runs it: a slow database would otherwise fail every replica at once and have
-// all of them restarted, turning a degradation into an outage.
-func (app *Application) setDatabase() error {
-	cfg := app.cfg.Database
+// DatabaseOptions is exported because the aegisd subcommands open the same
+// database without assembling an Application, and a second copy of this mapping
+// would drift the first time a field is added.
+func DatabaseOptions(cfg *configs.Application, logger *log.Logger) database.Options {
+	db := cfg.Database
 
-	db, err := database.Open(database.Options{
-		Driver:         database.Driver(cfg.Driver),
-		Host:           cfg.Host,
-		Port:           cfg.Port,
-		Name:           cfg.Name,
-		User:           cfg.User,
-		Password:       cfg.Password,
-		Path:           cfg.Path,
-		SSLMode:        cfg.SSLMode,
-		SSLRootCert:    cfg.SSLRootCert,
-		Options:        cfg.Options,
-		ConnectTimeout: cfg.ConnectTimeout,
+	return database.Options{
+		Driver:         database.Driver(db.Driver),
+		Host:           db.Host,
+		Port:           db.Port,
+		Name:           db.Name,
+		User:           db.User,
+		Password:       db.Password,
+		Path:           db.Path,
+		SSLMode:        db.SSLMode,
+		SSLRootCert:    db.SSLRootCert,
+		Options:        db.Options,
+		ConnectTimeout: db.ConnectTimeout,
 		Pool: database.Pool{
-			MaxOpen:         cfg.Pool.MaxOpen,
-			MaxIdle:         cfg.Pool.MaxIdle,
-			ConnMaxLifetime: cfg.Pool.ConnMaxLifetime,
-			ConnMaxIdleTime: cfg.Pool.ConnMaxIdleTime,
+			MaxOpen:         db.Pool.MaxOpen,
+			MaxIdle:         db.Pool.MaxIdle,
+			ConnMaxLifetime: db.Pool.ConnMaxLifetime,
+			ConnMaxIdleTime: db.Pool.ConnMaxIdleTime,
 		},
-		Logger: app.logger,
+		Logger: logger,
 		// A query slower than the request timeout has already lost the request
 		// it belonged to, which makes it the natural threshold.
-		SlowThreshold: app.cfg.HttpServer.RequestTimeout,
+		SlowThreshold: cfg.HttpServer.RequestTimeout,
 		// Query arguments are credentials, tokens and personal data. They are
 		// only rendered outside production.
-		LogParameters: app.cfg.Profile.IsDev(),
-	})
+		LogParameters: cfg.Profile.IsDev(),
+	}
+}
+
+// Readiness only: a slow database checked by liveness would restart every
+// replica at once, turning a degradation into an outage.
+func (app *Application) setDatabase() error {
+	db, err := database.Open(DatabaseOptions(app.cfg, app.logger))
 	if err != nil {
 		return err
 	}
@@ -96,6 +109,84 @@ func (app *Application) setDatabase() error {
 	app.database = db
 
 	app.health.RegisterDetailed("database", db.Probe)
+
+	return nil
+}
+
+// setSchema migrates when asked, and verifies either way: with migration off,
+// an operator who forgot `aegisd migrate` would otherwise serve requests until
+// the first query touched a missing column.
+func (app *Application) setSchema() error {
+	driver := app.cfg.Database.Driver.String()
+
+	expected, err := migrations.Latest(driver)
+	if err != nil {
+		return err
+	}
+
+	cfg := app.cfg.Database.Migrate
+
+	// New takes no context, so the deadline comes from configuration. Keep the
+	// startupProbe budget above it: a probe firing mid-DDL leaves a dirty
+	// schema needing a manual force.
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+
+	if cfg.OnBoot {
+		source, err := migrations.For(driver)
+		if err != nil {
+			return err
+		}
+
+		app.logger.Info().Str("driver", driver).Uint64("target", uint64(expected)).
+			Msg("applying database migrations")
+
+		if err := app.database.Migrate(ctx, source, database.MigrateOptions{
+			Timeout:     cfg.Timeout,
+			LockTimeout: cfg.LockTimeout,
+		}); err != nil {
+			return err
+		}
+	}
+
+	if err := app.database.VerifySchema(ctx, expected); err != nil {
+		return err
+	}
+
+	app.logger.Info().Str("driver", driver).Uint64("version", uint64(expected)).
+		Msg("database schema verified")
+
+	return nil
+}
+
+// setServices builds what the use cases need and seeds the master realm. The
+// service is held on the Application rather than built as a local, so the admin
+// API does not later construct a second one.
+func (app *Application) setServices() error {
+	publicURL, err := url.Parse(app.cfg.PublicURL)
+	if err != nil {
+		return fmt.Errorf("application: reading the public url: %w", err)
+	}
+
+	store := repository.NewStore(app.database.Gorm)
+	app.realms = service.NewRealmService(store, publicURL)
+
+	// Bounded, or a FindBySlug waiting on a row lock hangs the boot. It borrows
+	// connect_timeout: the seed is a few single-row round trips on an open
+	// connection, so the budget matches and there is no second setting to keep
+	// in step.
+	ctx, cancel := context.WithTimeout(context.Background(), app.cfg.Database.ConnectTimeout)
+	defer cancel()
+
+	master, err := app.realms.EnsureMaster(ctx, app.cfg.Profile.IsDev())
+	if err != nil {
+		return err
+	}
+
+	app.logger.Info().
+		Str("realm", master.Slug()).
+		Str("issuer", master.Issuer()).
+		Msg("master realm ready")
 
 	return nil
 }

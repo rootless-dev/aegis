@@ -170,7 +170,7 @@ func TestLandingPageAnswersHTML(t *testing.T) {
 	}
 
 	// Content only the real landing page produces, through the real model.
-	for _, want := range []string{"<title>Aegis</title>", "Identity for every tenant."} {
+	for _, want := range []string{"<title>Aegis</title>", "Identity for every realm."} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the landing page is missing %q:\n%s", want, body)
 		}

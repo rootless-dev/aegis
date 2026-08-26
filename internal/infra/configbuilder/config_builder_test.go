@@ -487,6 +487,62 @@ func TestDatabaseComesFromTheEnvironment(t *testing.T) {
 	}
 }
 
+func TestMigrateReadsTheEnvironment(t *testing.T) {
+	t.Setenv("DATABASE_MIGRATE_ON_BOOT", "false")
+	t.Setenv("DATABASE_MIGRATE_TIMEOUT", "90s")
+	t.Setenv("DATABASE_MIGRATE_LOCK_TIMEOUT", "20s")
+
+	cfg, err := configbuilder.New().
+		WithDefaults().WithEnv().WithFlags(development()).Normalize().Validate().Build()
+	if err != nil {
+		t.Fatalf("building: %v", err)
+	}
+
+	if cfg.Database.Migrate.OnBoot {
+		t.Error("DATABASE_MIGRATE_ON_BOOT=false must turn migration off")
+	}
+
+	if cfg.Database.Migrate.Timeout != 90*time.Second {
+		t.Errorf("timeout: want 90s, got %s", cfg.Database.Migrate.Timeout)
+	}
+
+	if cfg.Database.Migrate.LockTimeout != 20*time.Second {
+		t.Errorf("lock timeout: want 20s, got %s", cfg.Database.Migrate.LockTimeout)
+	}
+}
+
+func TestMigrateOnBootFlagOverridesTheEnvironment(t *testing.T) {
+	t.Setenv("DATABASE_MIGRATE_ON_BOOT", "true")
+
+	cfg, err := configbuilder.New().
+		WithDefaults().WithEnv().
+		WithFlags([]string{"--dev", "--migrate-on-boot=false"}).
+		Normalize().Validate().Build()
+	if err != nil {
+		t.Fatalf("building: %v", err)
+	}
+
+	if cfg.Database.Migrate.OnBoot {
+		t.Error("the command line is the last layer and must win")
+	}
+}
+
+// An absent flag carries no value: the pointer in the flags struct is what
+// keeps a default false from overwriting what an earlier layer set.
+func TestAbsentMigrateFlagLeavesTheEnvironmentAlone(t *testing.T) {
+	t.Setenv("DATABASE_MIGRATE_ON_BOOT", "false")
+
+	cfg, err := configbuilder.New().
+		WithDefaults().WithEnv().WithFlags(development()).Normalize().Validate().Build()
+	if err != nil {
+		t.Fatalf("building: %v", err)
+	}
+
+	if cfg.Database.Migrate.OnBoot {
+		t.Error("an absent --migrate-on-boot must not re-enable migration")
+	}
+}
+
 // The password must never be reachable from the configuration file, or it ends
 // up committed to a repository somewhere.
 func TestThePasswordCannotComeFromTheFile(t *testing.T) {
