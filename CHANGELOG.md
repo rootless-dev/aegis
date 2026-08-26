@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.0.5](https://github.com/rootless-dev/aegis/compare/v0.0.4...v0.0.5) (2026-08-26)
+
+
+### Features
+
+* add the realm aggregate ([19847dd](https://github.com/rootless-dev/aegis/commit/19847ddfd6ada642f15b5c123071a1d2c8db02eb))
+* add the realm use cases and the ports they consume ([125eab1](https://github.com/rootless-dev/aegis/commit/125eab1fd5fbfcbc62f1cacda7e64472326e9959))
+* configure how the schema reaches the version the binary carries ([9e96e9d](https://github.com/rootless-dev/aegis/commit/9e96e9d38dc75cf011db49fa9bbefd3bf830ab2a))
+* give aegisd a migrate subcommand ([157edca](https://github.com/rootless-dev/aegis/commit/157edca429144f9ed813a64082be9c6fe964e1f2))
+* map realms to the four dialects behind a transactional store ([bcda071](https://github.com/rootless-dev/aegis/commit/bcda071645e04b0eacc9f5bec371ad97de331d46))
+* migrate, verify and seed the master realm during boot ([ecc6507](https://github.com/rootless-dev/aegis/commit/ecc6507e5ef19ddca6b0ef0d493d8c8778aa100e))
+* migrations on boot, the realms table, and the master realm ([0d14fd5](https://github.com/rootless-dev/aegis/commit/0d14fd59d672fe9846c59ea859bf06d9bb366ed5))
+* own the schema SQL and verify the version on every boot ([b733c6c](https://github.com/rootless-dev/aegis/commit/b733c6c961b5752b02af4d28a65c640ec1bfa0cb))
+
+
+### Refactoring
+
+* clear the smells the quality gate flagged ([6ecee02](https://github.com/rootless-dev/aegis/commit/6ecee02acb8b5e3930731213bc30486767f131a2))
+* say realm where the product means a realm ([acf5d04](https://github.com/rootless-dev/aegis/commit/acf5d0494f3fbd50b6d05db3bcef7a0bd2f545ed))
+
+
+### Documentation
+
+* describe the migration subsystem and the domain layering ([3d7682f](https://github.com/rootless-dev/aegis/commit/3d7682f8868f91330815add6986c923ac002631b))
+* record what phase 1 has landed in the roadmap ([0b2186c](https://github.com/rootless-dev/aegis/commit/0b2186ca3d312309362d2b21a32ca94716ba1516))
+
 ## [0.0.4](https://github.com/rootless-dev/aegis/compare/v0.0.3...v0.0.4) (2026-08-25)
 
 
