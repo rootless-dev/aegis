@@ -26,26 +26,27 @@ func start(t *testing.T, extraEnv ...string) *instance {
 	appPort := freePort(t)
 
 	env := append([]string{
-		"TLS_TERMINATION=none",
+		"AEGIS_TLS_TERMINATION=none",
 		// Matches the port the server is actually told to listen on below,
 		// same as before this suite ran against a real container: nothing
-		// asserts on PUBLIC_URL, but a value that could not possibly be this
+		// asserts on AEGIS_PUBLIC_URL, but a value that could not possibly be this
 		// process's own address is a needless way to invite confusion later.
-		"PUBLIC_URL=http://127.0.0.1:" + appPort,
-		"DATABASE_DRIVER=postgres",
-		"DATABASE_HOST=" + dbHost,
-		"DATABASE_PORT=" + dbPort,
-		"DATABASE_NAME=aegis",
-		"DATABASE_USER=aegis",
-		"DATABASE_PASSWORD=aegis",
-		"DATABASE_SSL_MODE=disable",
+		"AEGIS_PUBLIC_URL=http://127.0.0.1:" + appPort,
+		"AEGIS_CRYPTO_MASTER_KEY=" + testMasterKey,
+		"AEGIS_DATABASE_DRIVER=postgres",
+		"AEGIS_DATABASE_HOST=" + dbHost,
+		"AEGIS_DATABASE_PORT=" + dbPort,
+		"AEGIS_DATABASE_NAME=aegis",
+		"AEGIS_DATABASE_USER=aegis",
+		"AEGIS_DATABASE_PASSWORD=aegis",
+		"AEGIS_DATABASE_SSL_MODE=disable",
 	}, extraEnv...)
 
 	return launch(t, appPort, "http", http.DefaultClient, env, nil)
 }
 
 // startDevelopment exercises the TLS opt-in: dev serves plain HTTP, and
-// TLS_TERMINATION=app turns HTTPS back on without a key pair on the machine.
+// AEGIS_TLS_TERMINATION=app turns HTTPS back on without a key pair on the machine.
 // It is the only place left where a generated certificate meets a real socket.
 func startDevelopment(t *testing.T) *instance {
 	t.Helper()
@@ -56,7 +57,7 @@ func startDevelopment(t *testing.T) *instance {
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
 	}}
 
-	return launch(t, freePort(t), "https", client, []string{"TLS_TERMINATION=app"}, []string{"--dev"})
+	return launch(t, freePort(t), "https", client, []string{"AEGIS_TLS_TERMINATION=app"}, []string{"--dev"})
 }
 
 // startDevelopmentDefaults declares nothing at all, as `make run` does.
@@ -96,7 +97,7 @@ func TestBootsOnDefaultsAndShutsDownCleanly(t *testing.T) {
 		t.Errorf("expected the resolved driver in that announcement, got:\n%s", output)
 	}
 
-	if strings.Contains(output, "aegis:aegis@") || strings.Contains(output, "DATABASE_PASSWORD=aegis") {
+	if strings.Contains(output, "aegis:aegis@") || strings.Contains(output, "AEGIS_DATABASE_PASSWORD=aegis") {
 		t.Errorf("expected the database password not to appear in the log, got:\n%s", output)
 	}
 
@@ -107,7 +108,7 @@ func TestBootsOnDefaultsAndShutsDownCleanly(t *testing.T) {
 // depends on: readiness has to fail while the server still answers, otherwise
 // the load balancer keeps routing here after the door closes.
 func TestReadinessFailsWhileDraining(t *testing.T) {
-	server := start(t, "HEALTH_DRAIN_DELAY=5s")
+	server := start(t, "AEGIS_HEALTH_DRAIN_DELAY=5s")
 	waitUntilReady(t, server)
 	server.signal(t)
 
@@ -148,7 +149,7 @@ func TestReadinessFailsWhileDraining(t *testing.T) {
 // other side asked twice, so the remaining pendings are abandoned and the
 // process leaves with a failure status.
 func TestSecondSignalStopsWaiting(t *testing.T) {
-	server := start(t, "HEALTH_DRAIN_DELAY=15s")
+	server := start(t, "AEGIS_HEALTH_DRAIN_DELAY=15s")
 	waitUntilReady(t, server)
 
 	server.signal(t)
@@ -177,8 +178,8 @@ func TestSecondSignalStopsWaiting(t *testing.T) {
 // the process must refuse to come up and say what is wrong.
 func TestFailsFastOnInvalidConfiguration(t *testing.T) {
 	out, err := runBinaryToCompletion(t, nil, []string{
-		"HTTP_SERVER_PORT=not-a-port",
-		"LOGGING_LEVEL=banana",
+		"AEGIS_HTTP_SERVER_PORT=not-a-port",
+		"AEGIS_LOGGING_LEVEL=banana",
 	})
 	if err == nil {
 		t.Fatalf("an invalid configuration must not boot, output:\n%s", out)
@@ -197,7 +198,7 @@ func TestFailsFastOnInvalidConfiguration(t *testing.T) {
 // deployment whose gateway handles TLS, and one whose certificate was simply
 // forgotten. Only an operator can tell them apart, so production asks.
 func TestRefusesToBootWithoutADeclaredTopology(t *testing.T) {
-	out, err := runBinaryToCompletion(t, nil, []string{"HTTP_SERVER_PORT=" + freePort(t)})
+	out, err := runBinaryToCompletion(t, nil, []string{"AEGIS_HTTP_SERVER_PORT=" + freePort(t)})
 	if err == nil {
 		t.Fatalf("production must not guess who terminates TLS, output:\n%s", out)
 	}
