@@ -93,11 +93,25 @@ func (f *fakeRepo) Reissue(_ context.Context, id uuid.UUID, issuer string) error
 	return nil
 }
 
-type fakeStore struct{ repo service.RealmRepository }
+type fakeStore struct {
+	repo service.RealmRepository
 
-func (s fakeStore) Realms() service.RealmRepository { return s.repo }
+	// Concrete rather than the interface: the tests read rows straight off it.
+	keys *fakeKeys
+}
+
+func (s fakeStore) Realms() service.RealmRepository  { return s.repo }
+func (s fakeStore) Keys() service.RealmKeyRepository { return s.keys }
 
 func (s fakeStore) InTx(ctx context.Context, fn func(service.Store) error) error { return fn(s) }
+
+func realmServiceWith(t *testing.T, store *fakeStore, base *url.URL) *service.RealmService {
+	t.Helper()
+
+	keys := service.NewKeyService(store, &fakeSealer{kekID: testKEKID}, &fakeGenerator{})
+
+	return service.NewRealmService(store, base, keys)
+}
 
 func newService(t *testing.T) (*service.RealmService, *fakeRepo) {
 	t.Helper()
@@ -109,7 +123,7 @@ func newService(t *testing.T) (*service.RealmService, *fakeRepo) {
 
 	repo := newFakeRepo()
 
-	return service.NewRealmService(fakeStore{repo: repo}, base), repo
+	return realmServiceWith(t, &fakeStore{repo: repo, keys: newFakeKeys()}, base), repo
 }
 
 func TestCreateRefusesEveryReservedSlug(t *testing.T) {
@@ -255,7 +269,7 @@ func racing(t *testing.T, base, storedIssuer string, collision error) (*service.
 	repo.bySlug[stored.Slug()] = stored
 	repo.byID[stored.ID()] = stored
 
-	return service.NewRealmService(fakeStore{repo: repo}, parsed), repo
+	return realmServiceWith(t, &fakeStore{repo: repo, keys: newFakeKeys()}, parsed), repo
 }
 
 // Two replicas boot against the same fresh database, both find no master
@@ -349,7 +363,7 @@ func TestEnsureMasterRefusesADivergentIssuerOutsideDevelopment(t *testing.T) {
 	}
 
 	moved, _ := url.Parse("https://idp.moved.example.com")
-	relocated := service.NewRealmService(fakeStore{repo: repo}, moved)
+	relocated := realmServiceWith(t, &fakeStore{repo: repo, keys: newFakeKeys()}, moved)
 
 	if _, err := relocated.EnsureMaster(t.Context(), false); err == nil {
 		t.Fatal("a divergent issuer must refuse the boot outside development")
@@ -372,7 +386,7 @@ func TestEnsureMasterRewritesADivergentIssuerInDevelopment(t *testing.T) {
 	}
 
 	moved, _ := url.Parse("https://idp.moved.example.com")
-	relocated := service.NewRealmService(fakeStore{repo: repo}, moved)
+	relocated := realmServiceWith(t, &fakeStore{repo: repo, keys: newFakeKeys()}, moved)
 
 	r, err := relocated.EnsureMaster(t.Context(), true)
 	if err != nil {
@@ -478,4 +492,168 @@ func TestArchiveMovesTheStatus(t *testing.T) {
 	if repo.byID[created.ID()].Status() != realm.StatusArchived {
 		t.Error("archive must set the status rather than delete the row")
 	}
+}
+
+func TestCreateWritesTheRealmAndItsKeys(t *testing.T) {
+	realms, store := newRealmService(t)
+
+	created, err := realms.Create(t.Context(), "acme", "Acme")
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+
+	keys, err := store.Keys().ListByRealm(t.Context(), created.ID(), nil)
+	if err != nil {
+		t.Fatalf("listing keys: %v", err)
+	}
+
+	if len(keys) != 2 {
+		t.Errorf("want 2 keys, got %d", len(keys))
+	}
+}
+
+func TestCreateWritesNothingWhenAKeyInsertFails(t *testing.T) {
+	realms, store := newRealmService(t)
+
+	store.keys.failNextCreate = errors.New("boom")
+
+	if _, err := realms.Create(t.Context(), "acme", "Acme"); err == nil {
+		t.Fatal("want an error, got none")
+	}
+
+	// The fake's InTx is not a real transaction, so this asserts that both
+	// inserts are inside one InTx, not the rollback itself.
+	if len(store.keys.byID) != 0 {
+		t.Errorf("want no keys written, got %d", len(store.keys.byID))
+	}
+}
+
+func TestEnsureMasterGivesTheMasterRealmKeys(t *testing.T) {
+	realms, store := newRealmService(t)
+
+	master, err := realms.EnsureMaster(t.Context(), false)
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+
+	keys, err := store.Keys().ListByRealm(t.Context(), master.ID(), nil)
+	if err != nil {
+		t.Fatalf("listing keys: %v", err)
+	}
+
+	if len(keys) != 2 {
+		t.Errorf("want 2 keys, got %d", len(keys))
+	}
+}
+
+func TestEnsureMasterIsIdempotentAboutKeys(t *testing.T) {
+	realms, store := newRealmService(t)
+
+	if _, err := realms.EnsureMaster(t.Context(), false); err != nil {
+		t.Fatalf("first boot: %v", err)
+	}
+
+	if _, err := realms.EnsureMaster(t.Context(), false); err != nil {
+		t.Fatalf("second boot: %v", err)
+	}
+
+	master, err := store.Realms().FindBySlug(t.Context(), "master")
+	if err != nil {
+		t.Fatalf("reading the master realm: %v", err)
+	}
+
+	keys, err := store.Keys().ListByRealm(t.Context(), master.ID(), nil)
+	if err != nil {
+		t.Fatalf("listing keys: %v", err)
+	}
+
+	if len(keys) != 2 {
+		t.Errorf("want 2 keys after two boots, got %d", len(keys))
+	}
+}
+
+func TestResolveReturnsAnActiveRealm(t *testing.T) {
+	realms, _ := newRealmService(t)
+
+	created, err := realms.Create(t.Context(), "acme", "Acme")
+	if err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	found, err := realms.Resolve(t.Context(), "acme")
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+
+	if found.ID() != created.ID() {
+		t.Errorf("want realm %s, got %s", created.ID(), found.ID())
+	}
+}
+
+// Disabled realms keep serving their JWKS: refusing revokes no token already
+// issued, and looks to a client exactly like a rotated key.
+func TestResolveReturnsADisabledRealm(t *testing.T) {
+	realms, _ := newRealmService(t)
+
+	created, err := realms.Create(t.Context(), "acme", "Acme")
+	if err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	if err := realms.SetStatus(t.Context(), created.ID(), realm.StatusDisabled); err != nil {
+		t.Fatalf("disabling: %v", err)
+	}
+
+	if _, err := realms.Resolve(t.Context(), "acme"); err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+}
+
+func TestResolveRefusesAnArchivedRealm(t *testing.T) {
+	realms, _ := newRealmService(t)
+
+	created, err := realms.Create(t.Context(), "acme", "Acme")
+	if err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	if err := realms.Archive(t.Context(), created.ID()); err != nil {
+		t.Fatalf("archiving: %v", err)
+	}
+
+	_, err = realms.Resolve(t.Context(), "acme")
+	if !errors.Is(err, realm.ErrNotAvailable) {
+		t.Fatalf("want ErrNotAvailable, got %v", err)
+	}
+}
+
+// Creation has to see an archived realm, or a burned slug gets handed out again.
+func TestFindBySlugStillReturnsAnArchivedRealm(t *testing.T) {
+	realms, _ := newRealmService(t)
+
+	created, err := realms.Create(t.Context(), "acme", "Acme")
+	if err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	if err := realms.Archive(t.Context(), created.ID()); err != nil {
+		t.Fatalf("archiving: %v", err)
+	}
+
+	if _, err := realms.FindBySlug(t.Context(), "acme"); err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+}
+
+func newRealmService(t *testing.T) (*service.RealmService, *fakeStore) {
+	t.Helper()
+
+	base, err := url.Parse("https://auth.example.com")
+	if err != nil {
+		t.Fatalf("parsing the base url: %v", err)
+	}
+
+	store := &fakeStore{repo: newFakeRepo(), keys: newFakeKeys()}
+
+	return realmServiceWith(t, store, base), store
 }

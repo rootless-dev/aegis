@@ -121,7 +121,7 @@ database:
   name: aegis
   user: aegis
   # The password is deliberately not a key here. Writing it fails the boot;
-  # DATABASE_PASSWORD is the only route, because a secret that can live in a
+  # AEGIS_DATABASE_PASSWORD is the only route, because a secret that can live in a
   # configuration file eventually gets committed.
 
   # sqlite only, and only under the dev profile.
@@ -188,3 +188,8 @@ banner:
   # Worth turning off where logs are collected and parsed as structured
   # entries: the startup art is not JSON.
   enabled: true
+
+# There is no crypto section here. The master key that encrypts every realm's
+# signing key cannot be read from this file, because a secret that can live in
+# a configuration file eventually gets committed. AEGIS_CRYPTO_MASTER_KEY, or
+# AEGIS_CRYPTO_MASTER_KEY_FILE, are the only routes.

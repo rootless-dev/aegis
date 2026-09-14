@@ -47,10 +47,10 @@ an init container or a migration job will need the same four settings.
 ### TLS and the topology
 
 The base ships no Ingress, so nothing terminates TLS in front of the pod and it
-declares `TLS_TERMINATION=none`. Adding a gateway means switching that to
-`proxy` and declaring `PROXY_TRUSTED_PROXIES` with the ranges it calls from:
+declares `AEGIS_TLS_TERMINATION=none`. Adding a gateway means switching that to
+`proxy` and declaring `AEGIS_PROXY_TRUSTED_PROXIES` with the ranges it calls from:
 without them the forwarded headers are ignored, and `proxy` refuses to boot with
-the list empty. `PUBLIC_URL` has to be replaced either way — it is what clients
+the list empty. `AEGIS_PUBLIC_URL` has to be replaced either way — it is what clients
 reach the deployment at, and every issuer and redirect is built from it.
 
 The dev overlay runs the development profile and declares `none` there too, so
@@ -58,19 +58,19 @@ the pod speaks plain HTTP and the base probes apply unchanged. It used to serve
 TLS from a certificate generated at boot, which exercised the same listener
 production takes; that stopped being worth a security interstitial on every
 browser session once the forwarded port started serving pages. Setting it back
-to `app` means adjusting `PUBLIC_URL` to https in the same edit — the boot
+to `app` means adjusting `AEGIS_PUBLIC_URL` to https in the same edit — the boot
 validates one against the other — and patching the three probes to
 `scheme: HTTPS`, which the kubelet accepts because it does not verify what a
 probe is offered.
 
 Where the certificate comes from a Secret mounted by cert-manager or similar,
-point `TLS_CERT_FILE` and `TLS_KEY_FILE` at the mounted files and leave
-`TLS_RELOAD_INTERVAL` alone: the files are rewritten in place on renewal and are
+point `AEGIS_TLS_CERT_FILE` and `AEGIS_TLS_KEY_FILE` at the mounted files and leave
+`AEGIS_TLS_RELOAD_INTERVAL` alone: the files are rewritten in place on renewal and are
 picked up without restarting the pod.
 
 ### Changing the public url
 
-`PUBLIC_URL` is where the master realm's issuer came from, but only once: the
+`AEGIS_PUBLIC_URL` is where the master realm's issuer came from, but only once: the
 issuer was derived at creation and stored, and nothing derives it again on the
 read path. Under the production profile a boot that derives a different issuer
 than the one stored refuses to start, on every replica at once — every client
@@ -78,9 +78,9 @@ validates the `iss` claim byte for byte, and serving two of them silently is
 worse than not serving.
 
 So moving the deployment to a new hostname is two steps, not one. Changing
-`PUBLIC_URL` alone takes the whole installation down.
+`AEGIS_PUBLIC_URL` alone takes the whole installation down.
 
-If the new hostname is a mistake, the fix is to put `PUBLIC_URL` back. If the
+If the new hostname is a mistake, the fix is to put `AEGIS_PUBLIC_URL` back. If the
 move is deliberate, stop every instance and rewrite the stored issuer against
 the database:
 
@@ -119,10 +119,97 @@ graceful timeout. The relation with `terminationGracePeriodSeconds` lives in the
 manifest and is not verifiable from inside the process — keep them aligned by
 hand.
 
+## Environment variables carry the `AEGIS_` prefix
+
+Every variable aegis reads is named `AEGIS_` plus its path in the configuration
+file. **An installation configured before this change keeps none of its
+settings**: an unprefixed `DATABASE_HOST` is not read at all, and the boot
+fails on whatever the missing value makes invalid rather than on the rename
+itself. Renaming every variable in the deployment is the whole migration, and
+`env | grep AEGIS_` on a running pod is how to check one.
+
+## The master key
+
+Every realm's private signing key is encrypted before it reaches the database,
+with one key per installation. The process refuses to boot without it in every
+profile, so **a deployment that starts today stops starting** until
+`AEGIS_CRYPTO_MASTER_KEY` carries 32 bytes, base64 encoded:
+
+```sh
+openssl rand -base64 32
+```
+
+Like the database password, it has no configuration file key at all, and it
+belongs in a Secret created out of band rather than in a manifest anyone can
+read. The base already declares `AEGIS_CRYPTO_MASTER_KEY` as a `secretKeyRef`
+to `aegis-crypto/master-key`, so what a deployment adds is the Secret itself:
+
+```sh
+kubectl create secret generic aegis-crypto \
+  --from-literal=master-key="$(openssl rand -base64 32)"
+```
+
+```yaml
+- name: AEGIS_CRYPTO_MASTER_KEY
+  valueFrom:
+    secretKeyRef:
+      name: aegis-crypto
+      key: master-key
+```
+
+`AEGIS_CRYPTO_MASTER_KEY_FILE`, naming a path instead, is accepted everywhere the
+variable is and is the better of the two where a mounted secret is available:
+the value stays out of `/proc/<pid>/environ`, out of a `describe` on the
+manifest, and out of any subprocess. It is a read, so nothing about it conflicts
+with the read-only root filesystem. Setting both forms fails the boot rather
+than picking a winner.
+
+It is required by **every** subcommand, not only by the server. Configuration
+is built and validated before the dispatch picks what to run, so
+`aegisd migrate status` used as the deployment gate of the section below starts
+failing until the secret is mounted into that init container or pipeline step
+as well. It does not need the key to do its work; it needs it because the
+process it runs in refuses to be misconfigured — and the alternative, a
+migration applied by a binary that could not have booted, is worse than the
+inconvenience.
+
+### Backups
+
+A database dump alone no longer restores a working installation. What is in
+`realm_keys` is ciphertext, and the key that opens it is not in the dump. Back
+it up separately, and deliberately **not** beside the dump: a backup carrying
+both is a backup where the encryption is decorative.
+
+Losing it is survivable, which is worth knowing before it happens rather than
+during. Signing keys are regenerable — the recovery is a new key per realm and
+clients refetching the JWKS, at the cost of every token already issued being
+unverifiable for the minutes left in its lifetime. It is an outage, not a data
+loss.
+
+### Changing it
+
+`aegisd key rewrap` is the only supported way. It runs with `AEGIS_CRYPTO_MASTER_KEY`
+holding the new key and `AEGIS_CRYPTO_MASTER_KEY_PREVIOUS` holding the old one, and
+moves every row from one to the other: open it with the key its recorded
+`kek_id` names, reseal it under the current key, write the row.
+
+Changing the variable without rewrapping leaves every row sealed under a
+`kek_id` no running process holds, and every realm unable to sign — with
+nothing failing until something asks for a signature.
+
+It needs no maintenance window and no single transaction, and that is what the
+`kek_id` column is for. Every row states which key opens it, so a process
+holding both reads rows on either side of the boundary throughout, and an
+interrupted run leaves the database consistent: running it again continues
+where it stopped, and running it after it finished does nothing. Once a run
+finds nothing left to move, drop `AEGIS_CRYPTO_MASTER_KEY_PREVIOUS` and restart. A
+process still holding a previous key says so in a log line on every boot, which
+is what keeps a half-finished rewrap from being forgotten.
+
 ## Migrations
 
 There are two shapes for bringing the schema up, chosen with
-`DATABASE_MIGRATE_ON_BOOT`.
+`AEGIS_DATABASE_MIGRATE_ON_BOOT`.
 
 The default, `true`, migrates during `setSchema` before the process starts
 serving. This suits a single process: nothing else needs to run, and the
@@ -130,7 +217,7 @@ schema is always current when the first request lands. It also means the pod
 that happens to win the race applies the migration, so it is not a fit for
 more than one replica starting from an old schema at the same time.
 
-Setting `DATABASE_MIGRATE_ON_BOOT=false` and running `aegisd migrate` in an
+Setting `AEGIS_DATABASE_MIGRATE_ON_BOOT=false` and running `aegisd migrate` in an
 init container or a Job moves that work out of the pod's startup path
 entirely: the schema lands once, before any replica starts, and `setSchema`
 still checks the version on every boot regardless of `ON_BOOT`, so a replica

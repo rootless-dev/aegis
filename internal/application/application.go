@@ -10,6 +10,7 @@ import (
 	"github.com/rootless-dev/aegis/internal/banner"
 	"github.com/rootless-dev/aegis/internal/buildinfo"
 	"github.com/rootless-dev/aegis/internal/configs"
+	"github.com/rootless-dev/aegis/internal/handler/oidc"
 	"github.com/rootless-dev/aegis/internal/handler/page"
 	"github.com/rootless-dev/aegis/internal/http/assets"
 	"github.com/rootless-dev/aegis/internal/http/server"
@@ -17,6 +18,7 @@ import (
 	"github.com/rootless-dev/aegis/internal/infra/database"
 	"github.com/rootless-dev/aegis/internal/infra/graceful"
 	"github.com/rootless-dev/aegis/internal/infra/health"
+	"github.com/rootless-dev/aegis/internal/infra/sealer"
 	"github.com/rootless-dev/aegis/internal/service"
 )
 
@@ -30,6 +32,10 @@ type Application struct {
 	database *database.DB
 
 	realms *service.RealmService
+	keys   *service.KeyService
+	sealer *sealer.Sealer
+
+	oidc *oidc.Handler
 
 	// router is what the server serves; surfaces is the group carrying the full
 	// middleware chain, and is where each area mounts its own routes so that
@@ -71,6 +77,7 @@ func New(cfg *configs.Application) (*Application, error) {
 		instance.setHealth,
 		instance.setDatabase,
 		instance.setSchema,
+		instance.setCrypto,
 		instance.setServices,
 		instance.setCertificates,
 		instance.setWeb,

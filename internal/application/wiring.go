@@ -5,10 +5,14 @@ import (
 	"crypto/tls"
 	"fmt"
 	"html/template"
+	"net/http"
 	"net/url"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/phuslu/log"
 	"github.com/rootless-dev/aegis/internal/configs"
+	"github.com/rootless-dev/aegis/internal/domain/key"
+	"github.com/rootless-dev/aegis/internal/handler/oidc"
 	"github.com/rootless-dev/aegis/internal/handler/page"
 	"github.com/rootless-dev/aegis/internal/http/assets"
 	"github.com/rootless-dev/aegis/internal/http/render"
@@ -17,7 +21,9 @@ import (
 	"github.com/rootless-dev/aegis/internal/infra/database"
 	"github.com/rootless-dev/aegis/internal/infra/graceful"
 	"github.com/rootless-dev/aegis/internal/infra/health"
+	"github.com/rootless-dev/aegis/internal/infra/keygen"
 	"github.com/rootless-dev/aegis/internal/infra/logging"
+	"github.com/rootless-dev/aegis/internal/infra/sealer"
 	"github.com/rootless-dev/aegis/internal/migrations"
 	"github.com/rootless-dev/aegis/internal/repository"
 	"github.com/rootless-dev/aegis/internal/service"
@@ -159,6 +165,48 @@ func (app *Application) setSchema() error {
 	return nil
 }
 
+// NewSealer is exported for the reason DatabaseOptions is: the aegisd
+// subcommands build one without assembling an Application. The copies had
+// already drifted — only the server warned about the development key.
+func NewSealer(cfg *configs.Application, logger *log.Logger) (*sealer.Sealer, error) {
+	current, err := cfg.Crypto.Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	previous, err := cfg.Crypto.PreviousBytes()
+	if err != nil {
+		return nil, err
+	}
+
+	keeper, err := sealer.New(current, previous)
+	if err != nil {
+		return nil, err
+	}
+
+	if previous != nil {
+		logger.Info().
+			Str("previous_kek", sealer.KEKID(previous)).
+			Str("current_kek", keeper.CurrentKEKID()).
+			Msg("a previous master key is loaded; run `aegisd key rewrap` to finish the migration")
+	}
+
+	return keeper, nil
+}
+
+// setCrypto runs before setServices, which seeds keys and cannot do it without
+// a sealer.
+func (app *Application) setCrypto() error {
+	keeper, err := NewSealer(app.cfg, app.logger)
+	if err != nil {
+		return err
+	}
+
+	app.sealer = keeper
+
+	return nil
+}
+
 // setServices builds what the use cases need and seeds the master realm. The
 // service is held on the Application rather than built as a local, so the admin
 // API does not later construct a second one.
@@ -169,12 +217,15 @@ func (app *Application) setServices() error {
 	}
 
 	store := repository.NewStore(app.database.Gorm)
-	app.realms = service.NewRealmService(store, publicURL)
+
+	app.keys = service.NewKeyService(store, app.sealer, keygen.New())
+	app.realms = service.NewRealmService(store, publicURL, app.keys)
 
 	// Bounded, or a FindBySlug waiting on a row lock hangs the boot. It borrows
 	// connect_timeout: the seed is a few single-row round trips on an open
 	// connection, so the budget matches and there is no second setting to keep
-	// in step.
+	// in step. On a first boot it also generates the master realm's two key
+	// pairs, which is where most of that budget goes.
 	ctx, cancel := context.WithTimeout(context.Background(), app.cfg.Database.ConnectTimeout)
 	defer cancel()
 
@@ -183,10 +234,28 @@ func (app *Application) setServices() error {
 		return err
 	}
 
-	app.logger.Info().
+	published, err := app.keys.Published(ctx, master.ID())
+	if err != nil {
+		return err
+	}
+
+	event := app.logger.Info().
 		Str("realm", master.Slug()).
-		Str("issuer", master.Issuer()).
-		Msg("master realm ready")
+		Str("issuer", master.Issuer())
+
+	// Active only. Published carries the passive keys too, and the encoder
+	// appends fields without deduplicating, so logging all of them emits
+	// kid_RS256 twice after a rotation — where a last-wins JSON reader takes
+	// the passive one, which is the opposite of what this line is read for.
+	for _, current := range published {
+		if current.Status() != key.StatusActive {
+			continue
+		}
+
+		event = event.Str("kid_"+current.Algorithm().String(), current.KID())
+	}
+
+	event.Msg("master realm ready")
 
 	return nil
 }
@@ -256,6 +325,13 @@ func (app *Application) setWeb() error {
 
 	app.assets = server
 	app.page = page.New(renderer, app.logger)
+
+	app.oidc = oidc.New(
+		app.realms,
+		app.keys,
+		func(r *http.Request) string { return chi.URLParam(r, oidc.RealmParam) },
+		app.logger,
+	)
 
 	return nil
 }

@@ -15,6 +15,8 @@ func production(t *testing.T) *configs.Application {
 	cfg := configs.Default()
 	cfg.PublicURL = "https://auth.example.com"
 	cfg.Database = serverDatabase()
+	// Required in every profile, so a valid fixture carries one.
+	cfg.Crypto.MasterKey = testMasterKey
 
 	return cfg
 }
@@ -149,10 +151,13 @@ func requireValidation(t *testing.T, err error, wants string) {
 func TestDevelopmentDefaultsToPlainHTTP(t *testing.T) {
 	cfg := configs.Default()
 	cfg.Profile = configs.ProfileDev
+	// The master key is required in every profile, so it is part of a valid
+	// fixture rather than something development is excused from.
+	cfg.Crypto.MasterKey = testMasterKey
 	cfg.Normalize()
 
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("development should be valid with nothing declared, got %v", err)
+		t.Fatalf("development should be valid with nothing else declared, got %v", err)
 	}
 
 	if cfg.TLS.Termination != configs.TerminationNone {
@@ -174,6 +179,7 @@ func TestDevelopmentOptsIntoTLSWithoutAKeyPair(t *testing.T) {
 	cfg := configs.Default()
 	cfg.Profile = configs.ProfileDev
 	cfg.TLS.Termination = configs.TerminationApp
+	cfg.Crypto.MasterKey = testMasterKey
 	cfg.Normalize()
 
 	if err := cfg.Validate(); err != nil {

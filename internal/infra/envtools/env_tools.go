@@ -1,8 +1,10 @@
 package envtools
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/phuslu/log"
@@ -41,6 +43,37 @@ func Lookup[T AllowedEnvTypes](key string) (T, bool) {
 	}
 
 	return parse[T](key, raw)
+}
+
+// LookupSecret reads a secret from key, or from the file whose path key_FILE
+// names, which is the shape a mounted Docker or Kubernetes secret takes. Both
+// forms set is an error rather than a precedence rule: a silent winner is how
+// the wrong secret gets used for months.
+func LookupSecret(key string) (string, bool, error) {
+	direct, hasDirect := Lookup[string](key)
+	path, hasFile := Lookup[string](key + "_FILE")
+
+	switch {
+	case hasDirect && hasFile:
+		return "", false, fmt.Errorf("envtools: %s and %s_FILE are both set, and only one may be", key, key)
+	case hasFile:
+		// The path is boot configuration, not request input: whoever sets the
+		// variable already controls the process, so there is no traversal to
+		// escalate through. Scoping this under os.Root would only stop an
+		// operator from mounting their secret where they chose to mount it.
+		content, err := os.ReadFile(path) // #nosec G304
+		if err != nil {
+			return "", false, fmt.Errorf("envtools: reading %s_FILE at %q: %w", key, path, err)
+		}
+
+		// `echo` and editors leave a trailing newline, and a secret is compared
+		// byte for byte.
+		return strings.TrimSpace(string(content)), true, nil
+	case hasDirect:
+		return direct, true, nil
+	}
+
+	return "", false, nil
 }
 
 // LookupDuration reads a Go duration such as "15s" or "1m30s".

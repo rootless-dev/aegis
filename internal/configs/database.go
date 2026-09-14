@@ -66,7 +66,7 @@ type Database struct {
 	User string `yaml:"user"`
 
 	// Not decodable from the file: KnownFields(true) fails the boot on it, so
-	// DATABASE_PASSWORD is the only route in. A secret that can live in a
+	// AEGIS_DATABASE_PASSWORD is the only route in. A secret that can live in a
 	// configuration file eventually gets committed.
 	Password string `yaml:"-"`
 

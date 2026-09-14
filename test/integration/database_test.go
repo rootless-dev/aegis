@@ -36,7 +36,7 @@ func selectedDriver() string {
 //
 // sqlite is a development engine and is refused under the production profile
 // (internal/configs/database.go), so it boots under the dev profile instead.
-// TLS_TERMINATION stays explicit either way: Normalize only fills in what a
+// AEGIS_TLS_TERMINATION stays explicit either way: Normalize only fills in what a
 // source left blank, so declaring it here keeps every driver on the same
 // plain-HTTP listener the other tests in this package expect.
 //
@@ -52,24 +52,25 @@ func databaseEnvironment(t *testing.T) ([]string, func()) {
 	driver := selectedDriver()
 
 	env := []string{
-		"PUBLIC_URL=http://127.0.0.1:7500",
-		"TLS_TERMINATION=none",
-		"DATABASE_DRIVER=" + driver,
+		"AEGIS_PUBLIC_URL=http://127.0.0.1:7500",
+		"AEGIS_TLS_TERMINATION=none",
+		"AEGIS_CRYPTO_MASTER_KEY=" + testMasterKey,
+		"AEGIS_DATABASE_DRIVER=" + driver,
 	}
 
 	if driver == "sqlite" {
 		return append(env,
 			"AEGIS_PROFILE=dev",
-			"DATABASE_PATH="+filepath.Join(t.TempDir(), "aegis.db"),
+			"AEGIS_DATABASE_PATH="+filepath.Join(t.TempDir(), "aegis.db"),
 		), nil
 	}
 
 	env = append(env,
 		"AEGIS_PROFILE=prod",
-		"DATABASE_NAME=aegis",
-		"DATABASE_USER=aegis",
-		"DATABASE_PASSWORD=aegis",
-		"DATABASE_SSL_MODE=disable",
+		"AEGIS_DATABASE_NAME=aegis",
+		"AEGIS_DATABASE_USER=aegis",
+		"AEGIS_DATABASE_PASSWORD=aegis",
+		"AEGIS_DATABASE_SSL_MODE=disable",
 	)
 
 	var host, port string
@@ -87,7 +88,7 @@ func databaseEnvironment(t *testing.T) ([]string, func()) {
 		t.Fatalf("unknown test driver %q", driver)
 	}
 
-	return append(env, "DATABASE_HOST="+host, "DATABASE_PORT="+port), stop
+	return append(env, "AEGIS_DATABASE_HOST="+host, "AEGIS_DATABASE_PORT="+port), stop
 }
 
 // startPostgres returns the endpoint plus a function that stops the container
@@ -287,16 +288,19 @@ func assertReadyzTurnsUnhealthy(t *testing.T, process *instance) {
 func TestTheBootFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	env := []string{
 		"AEGIS_PROFILE=prod",
-		"PUBLIC_URL=http://localhost:7500",
-		"TLS_TERMINATION=none",
-		"DATABASE_DRIVER=postgres",
-		"DATABASE_HOST=127.0.0.1",
-		"DATABASE_PORT=1",
-		"DATABASE_NAME=aegis",
-		"DATABASE_USER=aegis",
-		"DATABASE_PASSWORD=aegis",
-		"DATABASE_SSL_MODE=disable",
-		"DATABASE_CONNECT_TIMEOUT=2s",
+		"AEGIS_PUBLIC_URL=http://localhost:7500",
+		"AEGIS_TLS_TERMINATION=none",
+		// Without it the boot refuses for the missing key instead of the
+		// unreachable database this test is about.
+		"AEGIS_CRYPTO_MASTER_KEY=" + testMasterKey,
+		"AEGIS_DATABASE_DRIVER=postgres",
+		"AEGIS_DATABASE_HOST=127.0.0.1",
+		"AEGIS_DATABASE_PORT=1",
+		"AEGIS_DATABASE_NAME=aegis",
+		"AEGIS_DATABASE_USER=aegis",
+		"AEGIS_DATABASE_PASSWORD=aegis",
+		"AEGIS_DATABASE_SSL_MODE=disable",
+		"AEGIS_DATABASE_CONNECT_TIMEOUT=2s",
 	}
 
 	output, err := runBinaryToCompletion(t, nil, env)

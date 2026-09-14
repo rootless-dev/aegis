@@ -22,6 +22,11 @@ secretGenerator:
   - name: aegis-database
     literals:
       - password=devpassword
+  # The base reads this one too. A development-only value, and one that shares
+  # no substring with anything else here for the same redaction reason.
+  - name: aegis-crypto
+    literals:
+      - master-key=ZGV2ZWxvcG1lbnQtb25seS1jbHVzdGVyLWtleS0zMmI=
 
 generatorOptions:
   disableNameSuffixHash: true

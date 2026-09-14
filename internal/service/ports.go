@@ -1,54 +1,50 @@
 // Package service holds the use cases and declares the interfaces they consume.
+//
+// This file carries only what crosses more than one use case: the transactional
+// boundary, and the ports reaching outside the process. A repository interface
+// lives beside the service that consumes it, so opening one file shows both the
+// use case and the contract it depends on.
 package service
 
 import (
 	"context"
-	"errors"
+	"crypto"
 
 	"github.com/google/uuid"
-	"github.com/rootless-dev/aegis/internal/domain/realm"
+	"github.com/rootless-dev/aegis/internal/domain/key"
 )
 
-// ErrLimitNotPositive reports a page size no repository will guess at. It lives
-// here, beside the interface that imposes the precondition, because the layers
-// that have to recognise it cannot import the implementation.
-var ErrLimitNotPositive = errors.New("service: List needs a positive limit")
+// Sealer encrypts private key material with the installation's master key.
+type Sealer interface {
+	// The returned kekID is recorded on the row: it is what a later Open, or a
+	// rewrap, needs.
+	Seal(plaintext, aad []byte) (sealed []byte, kekID string, err error)
 
-// RealmQuery is a keyset page over realms, ordered by id ascending.
-type RealmQuery struct {
-	// The zero UUID sorts before every UUIDv7, so an empty value needs no
-	// special case in the query.
-	After uuid.UUID
+	// Takes the row's recorded kekID rather than the current one, so rows a
+	// rewrap has not reached yet still open.
+	Open(sealed, aad []byte, kekID string) ([]byte, error)
 
-	// Must be positive. RealmService.List is what supplies a default.
-	Limit int
-
-	// Empty means every status except archived.
-	Status []realm.Status
+	CurrentKEKID() string
 }
 
-type RealmRepository interface {
-	Create(ctx context.Context, r *realm.Realm) error
-	FindByID(ctx context.Context, id uuid.UUID) (*realm.Realm, error)
+// KeyGenerator produces a key pair and the PKCS#8 encoding of its private half.
+// A port so the unit tests here do not pay a real RSA-2048 generation.
+type KeyGenerator interface {
+	Generate(algorithm key.Algorithm) (signer crypto.Signer, pkcs8 []byte, err error)
+}
 
-	// Returns archived realms too: creation has to see them, or a burned slug
-	// gets handed out again.
-	FindBySlug(ctx context.Context, slug string) (*realm.Realm, error)
-
-	// Refuses a non-positive q.Limit with ErrLimitNotPositive rather than
-	// inventing a page size; RealmService.List is what supplies a default.
-	List(ctx context.Context, q RealmQuery) ([]*realm.Realm, error)
-
-	// Writes display_name, status and updated_at, and no other column.
-	Update(ctx context.Context, r *realm.Realm) error
-
-	// Separate from Update because the issuer is immutable by design.
-	Reissue(ctx context.Context, id uuid.UUID, issuer string) error
+// SignerSource hands out the signer for a realm's active key.
+type SignerSource interface {
+	SignerFor(ctx context.Context, realmID uuid.UUID, algorithm key.Algorithm) (crypto.Signer, key.Ref, error)
 }
 
 // Store is the transactional boundary. The repositories handed to the callback
 // are bound to one transaction; the ones on Store itself are not.
+//
+// Accessors only. A method that did work here would be one every fake in the
+// test suite has to implement and one no transaction boundary needs.
 type Store interface {
 	Realms() RealmRepository
+	Keys() RealmKeyRepository
 	InTx(ctx context.Context, fn func(Store) error) error
 }

@@ -18,27 +18,32 @@ services:
       - "2345:2345"
     environment:
       AEGIS_PROFILE: dev
-      HTTP_SERVER_HOST: 0.0.0.0
+      AEGIS_HTTP_SERVER_HOST: 0.0.0.0
       # TLS is not declared here: the dev profile serves plain HTTP, and derives
-      # the public url from the listener to match. TLS_TERMINATION=app opts back
+      # the public url from the listener to match. AEGIS_TLS_TERMINATION=app opts back
       # into HTTPS, on a certificate generated at boot.
-      LOGGING_LEVEL: debug
-      LOGGING_PRETTY_ENABLED: "true"
+      AEGIS_LOGGING_LEVEL: debug
+      AEGIS_LOGGING_PRETTY_ENABLED: "true"
       # No load balancer here, so there is nothing to wait for on shutdown.
-      HEALTH_DRAIN_DELAY: "1s"
+      AEGIS_HEALTH_DRAIN_DELAY: "1s"
       # Against the engine a customer runs, not against sqlite: concurrent
       # writes, locking, types and transactional DDL all differ, and they are
       # what this service is going to depend on. Running the binary by hand
       # still falls back to sqlite.
-      DATABASE_DRIVER: postgres
-      DATABASE_HOST: postgres
-      DATABASE_NAME: aegis
-      DATABASE_USER: aegis
-      DATABASE_PASSWORD: devpassword
+      AEGIS_DATABASE_DRIVER: postgres
+      AEGIS_DATABASE_HOST: postgres
+      AEGIS_DATABASE_NAME: aegis
+      AEGIS_DATABASE_USER: aegis
+      AEGIS_DATABASE_PASSWORD: devpassword
       # Declared rather than left empty: an empty mode means "prefer", which
       # falls back to an unencrypted connection without saying so. On a
       # container next to this one, unencrypted is the deliberate answer.
-      DATABASE_SSL_MODE: disable
+      AEGIS_DATABASE_SSL_MODE: disable
+      # Interpolated from .env, which compose reads on its own and which is not
+      # committed. There is no literal here and no fallback in the binary: a
+      # master key that ships with the product is a decryption key every
+      # installation shares. `make master-key` writes one.
+      AEGIS_CRYPTO_MASTER_KEY: ${AEGIS_CRYPTO_MASTER_KEY:?run `make master-key` first}
     depends_on:
       postgres:
         condition: service_healthy

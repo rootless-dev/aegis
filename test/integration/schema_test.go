@@ -29,15 +29,16 @@ func schemaEnv(t *testing.T, publicPort string) ([]string, schemaEndpoint) {
 	dbHost, dbPort, _ := startPostgres(t)
 
 	env := []string{
-		"TLS_TERMINATION=none",
-		"PUBLIC_URL=http://127.0.0.1:" + publicPort,
-		"DATABASE_DRIVER=postgres",
-		"DATABASE_HOST=" + dbHost,
-		"DATABASE_PORT=" + dbPort,
-		"DATABASE_NAME=aegis",
-		"DATABASE_USER=aegis",
-		"DATABASE_PASSWORD=aegis",
-		"DATABASE_SSL_MODE=disable",
+		"AEGIS_TLS_TERMINATION=none",
+		"AEGIS_PUBLIC_URL=http://127.0.0.1:" + publicPort,
+		"AEGIS_CRYPTO_MASTER_KEY=" + testMasterKey,
+		"AEGIS_DATABASE_DRIVER=postgres",
+		"AEGIS_DATABASE_HOST=" + dbHost,
+		"AEGIS_DATABASE_PORT=" + dbPort,
+		"AEGIS_DATABASE_NAME=aegis",
+		"AEGIS_DATABASE_USER=aegis",
+		"AEGIS_DATABASE_PASSWORD=aegis",
+		"AEGIS_DATABASE_SSL_MODE=disable",
 	}
 
 	return env, schemaEndpoint{host: dbHost, port: dbPort}
@@ -126,7 +127,7 @@ func TestBootingASecondTimeLeavesTheSameRealmID(t *testing.T) {
 // an operator gets out.
 func TestMigrateOnBootFalseRefusesAnEmptyDatabaseAndNamesTheCLI(t *testing.T) {
 	env, _ := schemaEnv(t, freePort(t))
-	env = append(env, "DATABASE_MIGRATE_ON_BOOT=false")
+	env = append(env, "AEGIS_DATABASE_MIGRATE_ON_BOOT=false")
 
 	out, err := runBinaryToCompletion(t, nil, env)
 	if err == nil {
@@ -149,7 +150,7 @@ func TestMigrateSubcommandAppliesThenTheServerBootsWithMigrationOff(t *testing.T
 		t.Fatalf("aegisd migrate: want exit 0 against an empty database, got %d:\n%s", code, out)
 	}
 
-	server := launch(t, appPort, "http", http.DefaultClient, append(env, "DATABASE_MIGRATE_ON_BOOT=false"), nil)
+	server := launch(t, appPort, "http", http.DefaultClient, append(env, "AEGIS_DATABASE_MIGRATE_ON_BOOT=false"), nil)
 	waitUntilReady(t, server)
 
 	status, body := server.get(t, "/readyz")
@@ -179,20 +180,9 @@ func TestMigrateStatusExitsOneBeforeMigratingAndZeroAfter(t *testing.T) {
 	}
 }
 
-// Replaced rather than appended: which of two identical variables a process
-// reads is not something a test should rest on.
+// Named for what the move means at the call site.
 func movedTo(env []string, publicURL string) []string {
-	moved := make([]string, 0, len(env))
-
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "PUBLIC_URL=") {
-			continue
-		}
-
-		moved = append(moved, entry)
-	}
-
-	return append(moved, "PUBLIC_URL="+publicURL)
+	return replaceEnv(env, "AEGIS_PUBLIC_URL", publicURL)
 }
 
 // The production half of the issuer polarity. internal/application can only
@@ -210,8 +200,8 @@ func TestAMovedPublicURLRefusesTheBootInProduction(t *testing.T) {
 	// The listener moves with it: the port is free, but it must not be why this
 	// fails.
 	moved := append(movedTo(env, "http://moved.example.com:9000"),
-		"HTTP_SERVER_HOST=127.0.0.1",
-		"HTTP_SERVER_PORT="+freePort(t),
+		"AEGIS_HTTP_SERVER_HOST=127.0.0.1",
+		"AEGIS_HTTP_SERVER_PORT="+freePort(t),
 	)
 
 	code, out := runCommand(t, moved)

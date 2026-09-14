@@ -3,7 +3,8 @@
 // The repository against a real server, selected by AEGIS_TEST_DRIVER. Only
 // what a real server can show; realm_test.go covers the rest against SQLite.
 //
-// makeRealm comes from realm_test.go, which carries no build constraint.
+// makeRealm comes from realm_test.go, and seedRealm and makeKey from
+// key_test.go; neither file carries a build constraint.
 package repository_test
 
 import (
@@ -18,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/network"
+	"github.com/rootless-dev/aegis/internal/domain/key"
 	"github.com/rootless-dev/aegis/internal/domain/realm"
 	"github.com/rootless-dev/aegis/internal/infra/database"
 	"github.com/rootless-dev/aegis/internal/migrations"
@@ -477,5 +479,126 @@ func TestVerifySchemaRefusesBehindAndToleratesAhead(t *testing.T) {
 
 	if err := db.VerifySchema(ctx, expected); err != nil {
 		t.Errorf("a schema ahead of this binary must be tolerated, got %v", err)
+	}
+}
+
+// active_marker rests on NULLs not colliding in a unique index, which only a
+// real engine can confirm.
+func TestIntegrationRefusesASecondActiveKey(t *testing.T) {
+	_, store := openEngine(t)
+	// A slug per test: one engine serves the whole run, and uq_realms_slug does
+	// not care which test wrote the row.
+	realmID := seedRealm(t, store, "active-twice")
+
+	if err := store.Keys().Create(context.Background(), makeKey(t, realmID)); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	err := store.Keys().Create(context.Background(), makeKey(t, realmID))
+	if !errors.Is(err, key.ErrActiveKeyExists) {
+		t.Fatalf("want ErrActiveKeyExists, got %v", err)
+	}
+}
+
+func TestIntegrationAllowsManyPassiveKeys(t *testing.T) {
+	_, store := openEngine(t)
+	realmID := seedRealm(t, store, "many-passive")
+
+	for range 3 {
+		created := makeKey(t, realmID)
+
+		if err := store.Keys().Create(context.Background(), created); err != nil {
+			t.Fatalf("creating: %v", err)
+		}
+
+		if err := created.Deactivate(); err != nil {
+			t.Fatalf("deactivating: %v", err)
+		}
+
+		if err := store.Keys().Update(context.Background(), created); err != nil {
+			t.Fatalf("updating: %v", err)
+		}
+	}
+
+	passive, err := store.Keys().ListByRealm(
+		context.Background(), realmID, []key.Status{key.StatusPassive},
+	)
+	if err != nil {
+		t.Fatalf("listing: %v", err)
+	}
+
+	if len(passive) != 3 {
+		t.Errorf("want 3 passive keys, got %d", len(passive))
+	}
+}
+
+func TestIntegrationRefusesADuplicateKID(t *testing.T) {
+	_, store := openEngine(t)
+	realmID := seedRealm(t, store, "duplicate-kid")
+
+	created := makeKey(t, realmID)
+
+	if err := store.Keys().Create(context.Background(), created); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	if err := created.Deactivate(); err != nil {
+		t.Fatalf("deactivating: %v", err)
+	}
+
+	if err := store.Keys().Update(context.Background(), created); err != nil {
+		t.Fatalf("updating: %v", err)
+	}
+
+	// The slot is free by now, so the kid index is the only one left to fire.
+	duplicate, err := key.New(
+		realmID, key.PurposeSignature, created.Algorithm(),
+		created.PublicKey(), created.Sealed(), created.KEKID(),
+	)
+	if err != nil {
+		t.Fatalf("building the duplicate: %v", err)
+	}
+
+	if err := store.Keys().Create(context.Background(), duplicate); !errors.Is(err, key.ErrKIDTaken) {
+		t.Fatalf("want ErrKIDTaken, got %v", err)
+	}
+}
+
+func TestIntegrationCascadesKeysWithTheRealm(t *testing.T) {
+	db, store := openEngine(t)
+	realmID := seedRealm(t, store, "cascade")
+
+	if err := store.Keys().Create(context.Background(), makeKey(t, realmID)); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	// Raw SQL: no repository method deletes a realm, on purpose.
+	if err := db.Gorm.Exec("DELETE FROM realms WHERE id = ?", realmID.String()).Error; err != nil {
+		t.Fatalf("deleting the realm: %v", err)
+	}
+
+	remaining, err := store.Keys().ListByRealm(context.Background(), realmID, nil)
+	if err != nil {
+		t.Fatalf("listing: %v", err)
+	}
+
+	if len(remaining) != 0 {
+		t.Errorf("want the keys gone with the realm, got %d", len(remaining))
+	}
+}
+
+// Raw SQL: the repository cannot produce the row this CHECK refuses.
+func TestIntegrationRefusesAnActiveRowWithoutAMarker(t *testing.T) {
+	db, store := openEngine(t)
+	realmID := seedRealm(t, store, "marker-check")
+
+	created := makeKey(t, realmID)
+	if err := store.Keys().Create(context.Background(), created); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	err := db.Gorm.Exec("UPDATE realm_keys SET active_marker = NULL WHERE id = ?", created.ID().String()).Error
+	if err == nil {
+		t.Fatal("want the check constraint to refuse it, got no error")
 	}
 }

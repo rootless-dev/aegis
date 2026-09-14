@@ -1,6 +1,7 @@
 package configbuilder
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -10,11 +11,12 @@ import (
 
 // applyEnv writes the environment over cfg. One function per section, in the
 // order the sections appear in the file, so a new setting has an obvious place
-// to go.
-func applyEnv(cfg *configs.Application) {
-	fromEnv(&cfg.AppName, "APP_NAME")
+// to go. It only returns an error because a secret can arrive as a file path,
+// and reading a file fails.
+func applyEnv(cfg *configs.Application) error {
+	fromEnv(&cfg.AppName, "AEGIS_APP_NAME")
 	typedFromEnv(&cfg.Profile, ProfileEnvVar)
-	fromEnv(&cfg.PublicURL, "PUBLIC_URL")
+	fromEnv(&cfg.PublicURL, "AEGIS_PUBLIC_URL")
 
 	applyLogging(cfg.Logging)
 	applyHttpServer(cfg.HttpServer)
@@ -26,6 +28,21 @@ func applyEnv(cfg *configs.Application) {
 	applyHealth(cfg.Health)
 	applyBanner(cfg.Banner)
 	applyDatabase(cfg.Database)
+
+	return applyCrypto(cfg.Crypto)
+}
+
+func applyCrypto(cfg *configs.Crypto) error {
+	if cfg == nil {
+		return nil
+	}
+
+	var errs []error
+
+	errs = append(errs, secretFromEnv(&cfg.MasterKey, "AEGIS_CRYPTO_MASTER_KEY"))
+	errs = append(errs, secretFromEnv(&cfg.MasterKeyPrevious, "AEGIS_CRYPTO_MASTER_KEY_PREVIOUS"))
+
+	return errors.Join(errs...)
 }
 
 // The nil checks are not defensive noise: a document writing `logging:` with no
@@ -37,11 +54,11 @@ func applyLogging(cfg *configs.Logging) {
 		return
 	}
 
-	fromEnv(&cfg.Level, "LOGGING_LEVEL")
-	fromEnv(&cfg.Caller, "LOGGING_CALLER_LEVEL")
-	fromEnv(&cfg.TimeField, "LOGGING_TIME_FIELD")
-	fromEnv(&cfg.TimeFormat, "LOGGING_TIME_FORMAT")
-	fromEnv(&cfg.PrettyEnabled, "LOGGING_PRETTY_ENABLED")
+	fromEnv(&cfg.Level, "AEGIS_LOGGING_LEVEL")
+	fromEnv(&cfg.Caller, "AEGIS_LOGGING_CALLER_LEVEL")
+	fromEnv(&cfg.TimeField, "AEGIS_LOGGING_TIME_FIELD")
+	fromEnv(&cfg.TimeFormat, "AEGIS_LOGGING_TIME_FORMAT")
+	fromEnv(&cfg.PrettyEnabled, "AEGIS_LOGGING_PRETTY_ENABLED")
 }
 
 func applyHttpServer(cfg *configs.HttpServer) {
@@ -49,14 +66,14 @@ func applyHttpServer(cfg *configs.HttpServer) {
 		return
 	}
 
-	fromEnv(&cfg.Host, "HTTP_SERVER_HOST")
-	fromEnv(&cfg.Port, "HTTP_SERVER_PORT")
-	fromEnv(&cfg.MaxHeaderBytes, "HTTP_SERVER_MAX_HEADER_BYTES")
-	durationFromEnv(&cfg.ReadHeaderTimeout, "HTTP_SERVER_READ_HEADER_TIMEOUT")
-	durationFromEnv(&cfg.ReadTimeout, "HTTP_SERVER_READ_TIMEOUT")
-	durationFromEnv(&cfg.WriteTimeout, "HTTP_SERVER_WRITE_TIMEOUT")
-	durationFromEnv(&cfg.IdleTimeout, "HTTP_SERVER_IDLE_TIMEOUT")
-	durationFromEnv(&cfg.RequestTimeout, "HTTP_SERVER_REQUEST_TIMEOUT")
+	fromEnv(&cfg.Host, "AEGIS_HTTP_SERVER_HOST")
+	fromEnv(&cfg.Port, "AEGIS_HTTP_SERVER_PORT")
+	fromEnv(&cfg.MaxHeaderBytes, "AEGIS_HTTP_SERVER_MAX_HEADER_BYTES")
+	durationFromEnv(&cfg.ReadHeaderTimeout, "AEGIS_HTTP_SERVER_READ_HEADER_TIMEOUT")
+	durationFromEnv(&cfg.ReadTimeout, "AEGIS_HTTP_SERVER_READ_TIMEOUT")
+	durationFromEnv(&cfg.WriteTimeout, "AEGIS_HTTP_SERVER_WRITE_TIMEOUT")
+	durationFromEnv(&cfg.IdleTimeout, "AEGIS_HTTP_SERVER_IDLE_TIMEOUT")
+	durationFromEnv(&cfg.RequestTimeout, "AEGIS_HTTP_SERVER_REQUEST_TIMEOUT")
 }
 
 func applyTLS(cfg *configs.TLS) {
@@ -64,10 +81,10 @@ func applyTLS(cfg *configs.TLS) {
 		return
 	}
 
-	typedFromEnv(&cfg.Termination, "TLS_TERMINATION")
-	fromEnv(&cfg.CertFile, "TLS_CERT_FILE")
-	fromEnv(&cfg.KeyFile, "TLS_KEY_FILE")
-	durationFromEnv(&cfg.ReloadInterval, "TLS_RELOAD_INTERVAL")
+	typedFromEnv(&cfg.Termination, "AEGIS_TLS_TERMINATION")
+	fromEnv(&cfg.CertFile, "AEGIS_TLS_CERT_FILE")
+	fromEnv(&cfg.KeyFile, "AEGIS_TLS_KEY_FILE")
+	durationFromEnv(&cfg.ReloadInterval, "AEGIS_TLS_RELOAD_INTERVAL")
 }
 
 func applyProxy(cfg *configs.Proxy) {
@@ -75,8 +92,8 @@ func applyProxy(cfg *configs.Proxy) {
 		return
 	}
 
-	listFromEnv(&cfg.TrustedProxies, "PROXY_TRUSTED_PROXIES")
-	typedFromEnv(&cfg.Headers, "PROXY_HEADERS")
+	listFromEnv(&cfg.TrustedProxies, "AEGIS_PROXY_TRUSTED_PROXIES")
+	typedFromEnv(&cfg.Headers, "AEGIS_PROXY_HEADERS")
 }
 
 func applyHSTS(cfg *configs.HSTS) {
@@ -84,9 +101,9 @@ func applyHSTS(cfg *configs.HSTS) {
 		return
 	}
 
-	fromEnv(&cfg.Enabled, "HSTS_ENABLED")
-	fromEnv(&cfg.IncludeSubdomains, "HSTS_INCLUDE_SUBDOMAINS")
-	durationFromEnv(&cfg.MaxAge, "HSTS_MAX_AGE")
+	fromEnv(&cfg.Enabled, "AEGIS_HSTS_ENABLED")
+	fromEnv(&cfg.IncludeSubdomains, "AEGIS_HSTS_INCLUDE_SUBDOMAINS")
+	durationFromEnv(&cfg.MaxAge, "AEGIS_HSTS_MAX_AGE")
 }
 
 func applyCSP(cfg *configs.CSP) {
@@ -94,7 +111,7 @@ func applyCSP(cfg *configs.CSP) {
 		return
 	}
 
-	fromEnv(&cfg.Enabled, "CSP_ENABLED")
+	fromEnv(&cfg.Enabled, "AEGIS_CSP_ENABLED")
 }
 
 func applyGraceful(cfg *configs.Graceful) {
@@ -102,7 +119,7 @@ func applyGraceful(cfg *configs.Graceful) {
 		return
 	}
 
-	durationFromEnv(&cfg.Timeout, "GRACEFUL_SHUTDOWN_TIMEOUT")
+	durationFromEnv(&cfg.Timeout, "AEGIS_GRACEFUL_SHUTDOWN_TIMEOUT")
 }
 
 func applyHealth(cfg *configs.Health) {
@@ -110,8 +127,8 @@ func applyHealth(cfg *configs.Health) {
 		return
 	}
 
-	durationFromEnv(&cfg.CheckTimeout, "HEALTH_CHECK_TIMEOUT")
-	durationFromEnv(&cfg.DrainDelay, "HEALTH_DRAIN_DELAY")
+	durationFromEnv(&cfg.CheckTimeout, "AEGIS_HEALTH_CHECK_TIMEOUT")
+	durationFromEnv(&cfg.DrainDelay, "AEGIS_HEALTH_DRAIN_DELAY")
 }
 
 func applyBanner(cfg *configs.Banner) {
@@ -119,7 +136,7 @@ func applyBanner(cfg *configs.Banner) {
 		return
 	}
 
-	fromEnv(&cfg.Enabled, "BANNER_ENABLED")
+	fromEnv(&cfg.Enabled, "AEGIS_BANNER_ENABLED")
 }
 
 func applyDatabase(cfg *configs.Database) {
@@ -127,16 +144,16 @@ func applyDatabase(cfg *configs.Database) {
 		return
 	}
 
-	typedFromEnv(&cfg.Driver, "DATABASE_DRIVER")
-	fromEnv(&cfg.Host, "DATABASE_HOST")
-	fromEnv(&cfg.Port, "DATABASE_PORT")
-	fromEnv(&cfg.Name, "DATABASE_NAME")
-	fromEnv(&cfg.User, "DATABASE_USER")
-	fromEnv(&cfg.Password, "DATABASE_PASSWORD")
-	fromEnv(&cfg.Path, "DATABASE_PATH")
-	fromEnv(&cfg.SSLMode, "DATABASE_SSL_MODE")
-	fromEnv(&cfg.SSLRootCert, "DATABASE_SSL_ROOT_CERT")
-	durationFromEnv(&cfg.ConnectTimeout, "DATABASE_CONNECT_TIMEOUT")
+	typedFromEnv(&cfg.Driver, "AEGIS_DATABASE_DRIVER")
+	fromEnv(&cfg.Host, "AEGIS_DATABASE_HOST")
+	fromEnv(&cfg.Port, "AEGIS_DATABASE_PORT")
+	fromEnv(&cfg.Name, "AEGIS_DATABASE_NAME")
+	fromEnv(&cfg.User, "AEGIS_DATABASE_USER")
+	fromEnv(&cfg.Password, "AEGIS_DATABASE_PASSWORD")
+	fromEnv(&cfg.Path, "AEGIS_DATABASE_PATH")
+	fromEnv(&cfg.SSLMode, "AEGIS_DATABASE_SSL_MODE")
+	fromEnv(&cfg.SSLRootCert, "AEGIS_DATABASE_SSL_ROOT_CERT")
+	durationFromEnv(&cfg.ConnectTimeout, "AEGIS_DATABASE_CONNECT_TIMEOUT")
 
 	applyDatabasePool(cfg.Pool)
 	applyDatabaseMigrate(cfg.Migrate)
@@ -147,9 +164,9 @@ func applyDatabaseMigrate(cfg *configs.Migrate) {
 		return
 	}
 
-	fromEnv(&cfg.OnBoot, "DATABASE_MIGRATE_ON_BOOT")
-	durationFromEnv(&cfg.Timeout, "DATABASE_MIGRATE_TIMEOUT")
-	durationFromEnv(&cfg.LockTimeout, "DATABASE_MIGRATE_LOCK_TIMEOUT")
+	fromEnv(&cfg.OnBoot, "AEGIS_DATABASE_MIGRATE_ON_BOOT")
+	durationFromEnv(&cfg.Timeout, "AEGIS_DATABASE_MIGRATE_TIMEOUT")
+	durationFromEnv(&cfg.LockTimeout, "AEGIS_DATABASE_MIGRATE_LOCK_TIMEOUT")
 }
 
 func applyDatabasePool(cfg *configs.Pool) {
@@ -157,16 +174,29 @@ func applyDatabasePool(cfg *configs.Pool) {
 		return
 	}
 
-	fromEnv(&cfg.MaxOpen, "DATABASE_POOL_MAX_OPEN")
-	fromEnv(&cfg.MaxIdle, "DATABASE_POOL_MAX_IDLE")
-	durationFromEnv(&cfg.ConnMaxLifetime, "DATABASE_POOL_CONN_MAX_LIFETIME")
-	durationFromEnv(&cfg.ConnMaxIdleTime, "DATABASE_POOL_CONN_MAX_IDLE_TIME")
+	fromEnv(&cfg.MaxOpen, "AEGIS_DATABASE_POOL_MAX_OPEN")
+	fromEnv(&cfg.MaxIdle, "AEGIS_DATABASE_POOL_MAX_IDLE")
+	durationFromEnv(&cfg.ConnMaxLifetime, "AEGIS_DATABASE_POOL_CONN_MAX_LIFETIME")
+	durationFromEnv(&cfg.ConnMaxIdleTime, "AEGIS_DATABASE_POOL_CONN_MAX_IDLE_TIME")
 }
 
 func fromEnv[T envtools.AllowedEnvTypes](target *T, key string) {
 	if value, ok := envtools.Lookup[T](key); ok {
 		*target = value
 	}
+}
+
+func secretFromEnv(target *string, key string) error {
+	value, ok, err := envtools.LookupSecret(key)
+	if err != nil {
+		return err
+	}
+
+	if ok {
+		*target = value
+	}
+
+	return nil
 }
 
 // typedFromEnv fills a named string type — a profile, a termination — which the

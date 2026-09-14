@@ -12,6 +12,17 @@ The order is deliberate: the file is what ships with the image, a variable is
 how a single instance is adjusted without rebuilding anything, and a flag is
 whoever is looking at the process right now.
 
+**Every variable aegis reads carries the `AEGIS_` prefix**, and the rest of the
+name is the path through the configuration file: `logging.level` is
+`AEGIS_LOGGING_LEVEL`, `database.pool.max_open` is
+`AEGIS_DATABASE_POOL_MAX_OPEN`. The prefix is not decoration. A process
+environment is shared with everything else in the container and with whatever
+the orchestrator injects, and names like `DATABASE_HOST` or `PUBLIC_URL` are
+common enough that something else eventually sets one — at which point aegis
+silently adopts a value nobody meant for it. One prefix makes that collision
+impossible to reach by accident, and makes `env | grep AEGIS_` the complete
+answer to what this process was configured with.
+
 Only flags that were actually passed count. A bool flag left out is
 indistinguishable by value from one passed as false, so `Flags` carries
 pointers — an absent flag must not overwrite what the file or the environment
@@ -176,7 +187,7 @@ nothing, and an operator who set one would otherwise believe the connection is
 authenticated when it is not.
 
 `database.password` does not exist as a key: writing it in the file fails the
-boot, because `KnownFields` rejects it outright. `DATABASE_PASSWORD` is the
+boot, because `KnownFields` rejects it outright. `AEGIS_DATABASE_PASSWORD` is the
 only route a password can take into this service — a value that *can* live in
 a configuration file eventually does, and that file eventually gets committed.
 
@@ -203,6 +214,33 @@ boot still refuses a schema older than the binary either way, and
 `aegisd migrate` is what applies the pending migrations when the startup path
 was told not to.
 
+## Crypto
+
+The master key encrypts every realm's private signing key before it reaches the
+database, and there is no way to read one without it. It is exactly 32 bytes,
+base64 encoded — `openssl rand -base64 32` — and, like the database password,
+it has no configuration file key at all: a secret that *can* live in a file
+eventually does, and that file eventually gets committed. `AEGIS_CRYPTO_MASTER_KEY`
+is the only route, or `AEGIS_CRYPTO_MASTER_KEY_FILE` naming a mounted Docker or
+Kubernetes secret, which keeps the value out of `/proc/<pid>/environ` and out
+of a subprocess' environment. **Setting both forms of the same secret fails the
+boot** rather than picking a winner: which secret is in use has to be
+unambiguous.
+
+**The key is required in every profile, development included, and there is no
+fallback.** A constant compiled into the binary would be a decryption key every
+installation shares, and one that any `strings` over a shipped binary finds; it
+would also make safety rest on a guard refusing it rather than on the secret
+not existing, and guards get refactored while constants do not. What it bought
+was setup-free development, and that belongs to the tooling: `make master-key`
+writes one into `.env`, which the binary already loads and which is not
+committed. `docker compose` interpolates the same variable, and the Kubernetes
+overlay generates the Secret the base reads.
+
+`AEGIS_CRYPTO_MASTER_KEY_PREVIOUS` is set only while the master key is being changed.
+Every stored row records which key sealed it, so with both set the process
+opens rows under either one and seals new material under the current key.
+
 ## Validation
 
 Everything is validated before anything starts, and **every problem is reported
@@ -214,6 +252,12 @@ http server: invalid port "abc"
 ```
 
 A boot that reports one error per run costs one restart per setting.
+
+This runs for the subcommands too, and over the whole configuration rather than
+the sections they touch: `aegisd migrate status` fails on a missing
+`AEGIS_CRYPTO_MASTER_KEY` it has no use for. A subcommand that ran under a
+configuration the server would reject is the trap being avoided — a schema
+migrated by a binary that could not have started.
 
 Some rules span sections, and those are checked too: the request timeout must
 not exceed the write timeout, or the connection dies before the handler can
@@ -229,60 +273,62 @@ both sources, because accepting it would silently mean nanoseconds.
 
 | YAML | Environment | Default |
 | --- | --- | --- |
-| `app_name` | `APP_NAME` | `Aegis` |
+| `app_name` | `AEGIS_APP_NAME` | `Aegis` |
 | `profile` | `AEGIS_PROFILE` (or `--dev`) | `prod` |
-| `public_url` | `PUBLIC_URL` | none, required outside `dev` |
-| `logging.level` | `LOGGING_LEVEL` | `INFO` |
-| `logging.caller` | `LOGGING_CALLER_LEVEL` | `1` |
-| `logging.time_field` | `LOGGING_TIME_FIELD` | empty |
-| `logging.time_format` | `LOGGING_TIME_FORMAT` | `2006-01-02 15:04:05` |
-| `logging.pretty_enabled` | `LOGGING_PRETTY_ENABLED` | `true` |
-| `http_server.host` | `HTTP_SERVER_HOST` | `0.0.0.0` |
-| `http_server.port` | `HTTP_SERVER_PORT` | `7500` |
-| `http_server.read_header_timeout` | `HTTP_SERVER_READ_HEADER_TIMEOUT` | `5s` |
-| `http_server.read_timeout` | `HTTP_SERVER_READ_TIMEOUT` | `15s` |
-| `http_server.write_timeout` | `HTTP_SERVER_WRITE_TIMEOUT` | `15s` |
-| `http_server.idle_timeout` | `HTTP_SERVER_IDLE_TIMEOUT` | `60s` |
-| `http_server.request_timeout` | `HTTP_SERVER_REQUEST_TIMEOUT` | `10s` |
-| `http_server.max_header_bytes` | `HTTP_SERVER_MAX_HEADER_BYTES` | `1048576` |
-| `tls.termination` | `TLS_TERMINATION` | required outside `dev`, where it fills in `none` |
-| `tls.cert_file` | `TLS_CERT_FILE` | empty |
-| `tls.key_file` | `TLS_KEY_FILE` | empty |
-| `tls.reload_interval` | `TLS_RELOAD_INTERVAL` | `1h` |
-| `proxy.trusted_proxies` | `PROXY_TRUSTED_PROXIES` | empty |
-| `proxy.headers` | `PROXY_HEADERS` | `x-forwarded` |
-| `hsts.enabled` | `HSTS_ENABLED` | `true` |
-| `hsts.max_age` | `HSTS_MAX_AGE` | `8760h` |
-| `hsts.include_subdomains` | `HSTS_INCLUDE_SUBDOMAINS` | `false` |
-| `csp.enabled` | `CSP_ENABLED` | `true` |
-| `database.driver` | `DATABASE_DRIVER` | none, required outside `dev` |
-| `database.host` | `DATABASE_HOST` | empty |
-| `database.port` | `DATABASE_PORT` | empty, the engine's own default |
-| `database.name` | `DATABASE_NAME` | empty |
-| `database.user` | `DATABASE_USER` | empty |
-| — | `DATABASE_PASSWORD` | empty, no file equivalent |
-| `database.path` | `DATABASE_PATH` | empty, `./aegis.dev.db` under `dev` |
-| `database.ssl_mode` | `DATABASE_SSL_MODE` | none, required outside `dev` |
-| `database.ssl_root_cert` | `DATABASE_SSL_ROOT_CERT` | empty |
-| `database.connect_timeout` | `DATABASE_CONNECT_TIMEOUT` | `10s` |
-| `database.pool.max_open` | `DATABASE_POOL_MAX_OPEN` | `25` |
-| `database.pool.max_idle` | `DATABASE_POOL_MAX_IDLE` | `25` |
-| `database.pool.conn_max_lifetime` | `DATABASE_POOL_CONN_MAX_LIFETIME` | `30m` |
-| `database.pool.conn_max_idle_time` | `DATABASE_POOL_CONN_MAX_IDLE_TIME` | `5m` |
-| `database.migrate.on_boot` | `DATABASE_MIGRATE_ON_BOOT` (or `--migrate-on-boot`) | `true` |
-| `database.migrate.timeout` | `DATABASE_MIGRATE_TIMEOUT` | `5m` |
-| `database.migrate.lock_timeout` | `DATABASE_MIGRATE_LOCK_TIMEOUT` | `0s`, which means golang-migrate's own default of 15s, not "no limit" |
-| `graceful.timeout` | `GRACEFUL_SHUTDOWN_TIMEOUT` | `20s` |
-| `health.check_timeout` | `HEALTH_CHECK_TIMEOUT` | `2s` |
-| `health.drain_delay` | `HEALTH_DRAIN_DELAY` | `5s` |
-| `banner.enabled` | `BANNER_ENABLED` | `true` |
+| `public_url` | `AEGIS_PUBLIC_URL` | none, required outside `dev` |
+| `logging.level` | `AEGIS_LOGGING_LEVEL` | `INFO` |
+| `logging.caller` | `AEGIS_LOGGING_CALLER_LEVEL` | `1` |
+| `logging.time_field` | `AEGIS_LOGGING_TIME_FIELD` | empty |
+| `logging.time_format` | `AEGIS_LOGGING_TIME_FORMAT` | `2006-01-02 15:04:05` |
+| `logging.pretty_enabled` | `AEGIS_LOGGING_PRETTY_ENABLED` | `true` |
+| `http_server.host` | `AEGIS_HTTP_SERVER_HOST` | `0.0.0.0` |
+| `http_server.port` | `AEGIS_HTTP_SERVER_PORT` | `7500` |
+| `http_server.read_header_timeout` | `AEGIS_HTTP_SERVER_READ_HEADER_TIMEOUT` | `5s` |
+| `http_server.read_timeout` | `AEGIS_HTTP_SERVER_READ_TIMEOUT` | `15s` |
+| `http_server.write_timeout` | `AEGIS_HTTP_SERVER_WRITE_TIMEOUT` | `15s` |
+| `http_server.idle_timeout` | `AEGIS_HTTP_SERVER_IDLE_TIMEOUT` | `60s` |
+| `http_server.request_timeout` | `AEGIS_HTTP_SERVER_REQUEST_TIMEOUT` | `10s` |
+| `http_server.max_header_bytes` | `AEGIS_HTTP_SERVER_MAX_HEADER_BYTES` | `1048576` |
+| `tls.termination` | `AEGIS_TLS_TERMINATION` | required outside `dev`, where it fills in `none` |
+| `tls.cert_file` | `AEGIS_TLS_CERT_FILE` | empty |
+| `tls.key_file` | `AEGIS_TLS_KEY_FILE` | empty |
+| `tls.reload_interval` | `AEGIS_TLS_RELOAD_INTERVAL` | `1h` |
+| `proxy.trusted_proxies` | `AEGIS_PROXY_TRUSTED_PROXIES` | empty |
+| `proxy.headers` | `AEGIS_PROXY_HEADERS` | `x-forwarded` |
+| `hsts.enabled` | `AEGIS_HSTS_ENABLED` | `true` |
+| `hsts.max_age` | `AEGIS_HSTS_MAX_AGE` | `8760h` |
+| `hsts.include_subdomains` | `AEGIS_HSTS_INCLUDE_SUBDOMAINS` | `false` |
+| `csp.enabled` | `AEGIS_CSP_ENABLED` | `true` |
+| `database.driver` | `AEGIS_DATABASE_DRIVER` | none, required outside `dev` |
+| `database.host` | `AEGIS_DATABASE_HOST` | empty |
+| `database.port` | `AEGIS_DATABASE_PORT` | empty, the engine's own default |
+| `database.name` | `AEGIS_DATABASE_NAME` | empty |
+| `database.user` | `AEGIS_DATABASE_USER` | empty |
+| — | `AEGIS_DATABASE_PASSWORD` | empty, no file equivalent |
+| `database.path` | `AEGIS_DATABASE_PATH` | empty, `./aegis.dev.db` under `dev` |
+| `database.ssl_mode` | `AEGIS_DATABASE_SSL_MODE` | none, required outside `dev` |
+| `database.ssl_root_cert` | `AEGIS_DATABASE_SSL_ROOT_CERT` | empty |
+| `database.connect_timeout` | `AEGIS_DATABASE_CONNECT_TIMEOUT` | `10s` |
+| `database.pool.max_open` | `AEGIS_DATABASE_POOL_MAX_OPEN` | `25` |
+| `database.pool.max_idle` | `AEGIS_DATABASE_POOL_MAX_IDLE` | `25` |
+| `database.pool.conn_max_lifetime` | `AEGIS_DATABASE_POOL_CONN_MAX_LIFETIME` | `30m` |
+| `database.pool.conn_max_idle_time` | `AEGIS_DATABASE_POOL_CONN_MAX_IDLE_TIME` | `5m` |
+| `database.migrate.on_boot` | `AEGIS_DATABASE_MIGRATE_ON_BOOT` (or `--migrate-on-boot`) | `true` |
+| `database.migrate.timeout` | `AEGIS_DATABASE_MIGRATE_TIMEOUT` | `5m` |
+| `database.migrate.lock_timeout` | `AEGIS_DATABASE_MIGRATE_LOCK_TIMEOUT` | `0s`, which means golang-migrate's own default of 15s, not "no limit" |
+| — | `AEGIS_CRYPTO_MASTER_KEY` (or `AEGIS_CRYPTO_MASTER_KEY_FILE`) | none, required in every profile |
+| — | `AEGIS_CRYPTO_MASTER_KEY_PREVIOUS` (or `AEGIS_CRYPTO_MASTER_KEY_PREVIOUS_FILE`) | empty |
+| `graceful.timeout` | `AEGIS_GRACEFUL_SHUTDOWN_TIMEOUT` | `20s` |
+| `health.check_timeout` | `AEGIS_HEALTH_CHECK_TIMEOUT` | `2s` |
+| `health.drain_delay` | `AEGIS_HEALTH_DRAIN_DELAY` | `5s` |
+| `banner.enabled` | `AEGIS_BANNER_ENABLED` | `true` |
 
 `read_header_timeout` is the slowloris defense: it bounds connections that
 trickle headers to hold a worker. `request_timeout` is carried on the request
 context and does not interrupt a handler that ignores it — it cancels what
 honors it, such as a database query.
 
-`PROXY_TRUSTED_PROXIES` is a comma separated list, taking CIDR blocks or bare
+`AEGIS_PROXY_TRUSTED_PROXIES` is a comma separated list, taking CIDR blocks or bare
 addresses, which are read as a single host. HSTS is only ever sent over a
 connection that already is HTTPS: announcing it over plain HTTP asks the browser
 to trust the one message an attacker on the path could have written.

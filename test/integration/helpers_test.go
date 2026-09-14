@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -22,6 +23,10 @@ const (
 	bootTimeout     = 20 * time.Second
 	shutdownTimeout = 30 * time.Second
 )
+
+// Every production-profile environment in this package carries it: without a
+// master key the boot refuses before it reaches anything the tests are about.
+const testMasterKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
 var binaryPath string
 
@@ -92,10 +97,10 @@ func launch(t *testing.T, port, scheme string, client *http.Client, extraEnv, ar
 	cmd.Stderr = output
 	cmd.Env = append([]string{
 		"PATH=" + os.Getenv("PATH"),
-		"HTTP_SERVER_HOST=127.0.0.1",
-		"HTTP_SERVER_PORT=" + port,
+		"AEGIS_HTTP_SERVER_HOST=127.0.0.1",
+		"AEGIS_HTTP_SERVER_PORT=" + port,
 		// The default drain waits for a load balancer that does not exist here.
-		"HEALTH_DRAIN_DELAY=1s",
+		"AEGIS_HEALTH_DRAIN_DELAY=1s",
 	}, extraEnv...)
 
 	if err := cmd.Start(); err != nil {
@@ -180,6 +185,34 @@ func (i *instance) wait(t *testing.T) error {
 
 		return nil
 	}
+}
+
+// Replaced rather than appended: which of two identical variables a process
+// reads is not something a test should rest on.
+func replaceEnv(env []string, name, value string) []string {
+	return append(removeEnv(env, name), name+"="+value)
+}
+
+func removeEnv(env []string, name string) []string {
+	out := make([]string, 0, len(env))
+
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, name+"=") {
+			out = append(out, entry)
+		}
+	}
+
+	return out
+}
+
+func valueOf(env []string, name string) string {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, name+"=") {
+			return strings.TrimPrefix(entry, name+"=")
+		}
+	}
+
+	return ""
 }
 
 func freePort(t *testing.T) string {

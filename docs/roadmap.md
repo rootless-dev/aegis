@@ -21,7 +21,12 @@ issues a verifiable token.
 Landed so far: schema migration on boot with a version check, the `realms` table
 across the four dialects, the realm aggregate with the service and repository
 around it, a `master` realm seeded idempotently, and an `aegisd migrate`
-subcommand for migrating outside the boot. Everything below is still ahead.
+subcommand for migrating outside the boot. Then the key half of the trust root:
+a signing key per realm and per algorithm, encrypted at rest under an
+installation master key, rotation and a JWKS published per realm, the `master`
+realm seeded with its keys alongside its issuer, and an `aegisd key` subcommand
+that operates all of it with no server running. Nothing signs a token yet.
+Everything below is still ahead.
 
 - `realm` as the isolation boundary, with its own issuer and signing keys
 - `identity` scoped to a realm, unique per realm rather than globally
@@ -30,7 +35,6 @@ subcommand for migrating outside the boot. Everything below is still ahead.
 - password verification with argon2id
 - server-side sessions, short-lived access tokens, refresh token rotation with
   reuse detection
-- signing key per realm, encrypted at rest, with rotation and a published JWKS
 - bootstrap of the master realm and the first administrator
 - administrative scope, the minimum an admin API needs
 

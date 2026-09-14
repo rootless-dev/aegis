@@ -19,15 +19,55 @@ const (
 	maxRealmPageSize     = 500
 )
 
+// ErrLimitNotPositive reports a page size no repository will guess at. It lives
+// here, beside the interface that imposes the precondition, because the layers
+// that have to recognise it cannot import the implementation.
+var ErrLimitNotPositive = errors.New("service: List needs a positive limit")
+
+// RealmQuery is a keyset page over realms, ordered by id ascending.
+type RealmQuery struct {
+	// The zero UUID sorts before every UUIDv7, so an empty value needs no
+	// special case in the query.
+	After uuid.UUID
+
+	// Must be positive. RealmService.List is what supplies a default.
+	Limit int
+
+	// Empty means every status except archived.
+	Status []realm.Status
+}
+
+type RealmRepository interface {
+	Create(ctx context.Context, r *realm.Realm) error
+	FindByID(ctx context.Context, id uuid.UUID) (*realm.Realm, error)
+
+	// Returns archived realms too: creation has to see them, or a burned slug
+	// gets handed out again.
+	FindBySlug(ctx context.Context, slug string) (*realm.Realm, error)
+
+	// Refuses a non-positive q.Limit with ErrLimitNotPositive rather than
+	// inventing a page size; RealmService.List is what supplies a default.
+	List(ctx context.Context, q RealmQuery) ([]*realm.Realm, error)
+
+	// Writes display_name, status and updated_at, and no other column. A write
+	// that matched no row returns realm.ErrNotFound, never nil.
+	Update(ctx context.Context, r *realm.Realm) error
+
+	// Separate from Update because the issuer is immutable by design.
+	Reissue(ctx context.Context, id uuid.UUID, issuer string) error
+}
+
 type RealmService struct {
 	store Store
 
 	// Derived from once, at creation. After that the stored column is the truth.
 	publicBaseURL *url.URL
+
+	keys *KeyService
 }
 
-func NewRealmService(store Store, publicBaseURL *url.URL) *RealmService {
-	return &RealmService{store: store, publicBaseURL: publicBaseURL}
+func NewRealmService(store Store, publicBaseURL *url.URL, keys *KeyService) *RealmService {
+	return &RealmService{store: store, publicBaseURL: publicBaseURL, keys: keys}
 }
 
 // Create refuses reserved slugs. That is policy about who may claim a name, not
@@ -45,13 +85,28 @@ func (s *RealmService) Create(ctx context.Context, slug, displayName string) (*r
 	return s.create(ctx, slug, displayName)
 }
 
+// create writes the realm and its signing keys in one transaction, so a realm
+// that cannot sign is never observable. The keys are generated before the
+// transaction opens: none may be held across an RSA-2048 generation.
 func (s *RealmService) create(ctx context.Context, slug, displayName string) (*realm.Realm, error) {
 	created, err := realm.New(slug, displayName, s.publicBaseURL)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.store.Realms().Create(ctx, created); err != nil {
+	prepared, err := s.keys.Prepare(created.ID())
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.store.InTx(ctx, func(tx Store) error {
+		if createErr := tx.Realms().Create(ctx, created); createErr != nil {
+			return createErr
+		}
+
+		return s.keys.persist(ctx, tx, prepared)
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -64,6 +119,24 @@ func (s *RealmService) FindByID(ctx context.Context, id uuid.UUID) (*realm.Realm
 
 func (s *RealmService) FindBySlug(ctx context.Context, slug string) (*realm.Realm, error) {
 	return s.store.Realms().FindBySlug(ctx, slug)
+}
+
+// Resolve is how a protocol endpoint turns a slug into a realm, so no endpoint
+// has to remember the status rule. FindBySlug keeps the opposite tolerance,
+// because creation has to see archived realms.
+func (s *RealmService) Resolve(ctx context.Context, slug string) (*realm.Realm, error) {
+	found, err := s.store.Realms().FindBySlug(ctx, slug)
+	if err != nil {
+		return nil, err
+	}
+
+	// Disabled is deliberately absent: a disabled realm still serves its JWKS,
+	// because refusing revokes nothing already issued.
+	if found.Status() == realm.StatusArchived {
+		return nil, fmt.Errorf("%w: %s", realm.ErrNotAvailable, slug)
+	}
+
+	return found, nil
 }
 
 // Clamps rather than rejects: a page size is not worth failing a call over.
@@ -112,13 +185,28 @@ func (s *RealmService) mutate(ctx context.Context, id uuid.UUID, apply func(*rea
 	})
 }
 
-// EnsureMaster is the boot seed, and the only caller past the reserved slug
+func (s *RealmService) EnsureMaster(ctx context.Context, development bool) (*realm.Realm, error) {
+	master, err := s.ensureMasterRealm(ctx, development)
+	if err != nil {
+		return nil, err
+	}
+
+	// Not left to create: an adopted or reissued master realm reaches this
+	// point without having gone through it.
+	if _, err := s.keys.EnsureKeys(ctx, master.ID()); err != nil {
+		return nil, err
+	}
+
+	return master, nil
+}
+
+// ensureMasterRealm is the boot seed, and the only caller past the reserved slug
 // rule. It touches the issuer and nothing else.
 //
 // A divergent issuer refuses the boot in production; development rewrites it,
 // because the public url comes from the listener there and changing the port
 // would leave a stale value with no visible symptom.
-func (s *RealmService) EnsureMaster(ctx context.Context, development bool) (*realm.Realm, error) {
+func (s *RealmService) ensureMasterRealm(ctx context.Context, development bool) (*realm.Realm, error) {
 	found, err := s.store.Realms().FindBySlug(ctx, masterSlug)
 
 	if errors.Is(err, realm.ErrNotFound) {

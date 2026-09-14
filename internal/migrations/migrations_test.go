@@ -11,6 +11,10 @@ import (
 
 var dialects = []string{"postgres", "mysql", "mariadb", "sqlite"}
 
+// Bumped by hand, which is the point: a value derived from the directory would
+// agree with itself no matter which dialect is missing a migration.
+const latestVersion = 5
+
 func TestForIsRootedAtTheDialectDirectory(t *testing.T) {
 	for _, dialect := range dialects {
 		tree, err := migrations.For(dialect)
@@ -39,8 +43,8 @@ func TestLatestReportsTheHighestVersion(t *testing.T) {
 			t.Fatalf("%s: %v", dialect, err)
 		}
 
-		if version != 1 {
-			t.Errorf("%s: want 1, got %d", dialect, version)
+		if version != latestVersion {
+			t.Errorf("%s: want %d, got %d", dialect, latestVersion, version)
 		}
 	}
 }

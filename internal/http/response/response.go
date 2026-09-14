@@ -62,8 +62,14 @@ func WriteJSON(w http.ResponseWriter, status int, payload any) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	WriteBytes(w, status, "application/json;charset=UTF-8", encoded)
+}
+
+// WriteBytes writes an already-encoded body and sets no cache headers: the
+// caller decides.
+func WriteBytes(w http.ResponseWriter, status int, contentType string, body []byte) {
+	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(status)
 
-	_, _ = w.Write(encoded)
+	_, _ = w.Write(body)
 }
