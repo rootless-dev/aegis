@@ -15,3 +15,9 @@ var (
 	ErrStatusInvalid      = errors.New("realm: status is not one of active, disabled, archived")
 	ErrIDInvalid          = errors.New("realm: identifier is empty")
 )
+
+// ErrNotAvailable is a realm that exists and is not reachable as a protocol
+// endpoint. An archived realm keeps its row so its slug and issuer stay
+// occupied: cached discovery and dead tokens must not follow them to a new
+// realm.
+var ErrNotAvailable = errors.New("realm: not available")
