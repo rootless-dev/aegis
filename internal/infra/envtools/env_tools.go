@@ -57,7 +57,11 @@ func LookupSecret(key string) (string, bool, error) {
 	case hasDirect && hasFile:
 		return "", false, fmt.Errorf("envtools: %s and %s_FILE are both set, and only one may be", key, key)
 	case hasFile:
-		content, err := os.ReadFile(path)
+		// The path is boot configuration, not request input: whoever sets the
+		// variable already controls the process, so there is no traversal to
+		// escalate through. Scoping this under os.Root would only stop an
+		// operator from mounting their secret where they chose to mount it.
+		content, err := os.ReadFile(path) // #nosec G304
 		if err != nil {
 			return "", false, fmt.Errorf("envtools: reading %s_FILE at %q: %w", key, path, err)
 		}

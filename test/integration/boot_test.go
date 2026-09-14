@@ -57,14 +57,21 @@ func startDevelopment(t *testing.T) *instance {
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
 	}}
 
-	return launch(t, freePort(t), "https", client, []string{"AEGIS_TLS_TERMINATION=app"}, []string{"--dev"})
+	return launch(t, freePort(t), "https", client, []string{
+		"AEGIS_TLS_TERMINATION=app",
+		"AEGIS_CRYPTO_MASTER_KEY=" + testMasterKey,
+	}, []string{"--dev"})
 }
 
-// startDevelopmentDefaults declares nothing at all, as `make run` does.
+// startDevelopmentDefaults declares nothing the development profile supplies a
+// default for. The master key is the one thing it cannot: every profile
+// requires one, so `make run` reads it from .env the same way this does.
 func startDevelopmentDefaults(t *testing.T) *instance {
 	t.Helper()
 
-	return launch(t, freePort(t), "http", http.DefaultClient, nil, []string{"--dev"})
+	return launch(t, freePort(t), "http", http.DefaultClient, []string{
+		"AEGIS_CRYPTO_MASTER_KEY=" + testMasterKey,
+	}, []string{"--dev"})
 }
 
 // TestBootsOnDefaultsAndShutsDownCleanly is the reason this package exists: it

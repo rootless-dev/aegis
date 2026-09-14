@@ -131,12 +131,15 @@ jobs:
       # matrix already covers the engines a customer runs: what is under test
       # here is the image, not the database. AEGIS_DATABASE_PATH is spelled out
       # because the default is relative, the working directory is /, and the
-      # image runs as nonroot.
+      # image runs as nonroot. The master key is generated per run: every
+      # profile requires one, and a literal here would be a key in a public
+      # repository.
       - name: Run it
         run: |
           docker run -d --rm --name aegis-ci \
             -p 7500:7500 \
             -e AEGIS_DATABASE_PATH=/tmp/aegis-ci.db \
+            -e AEGIS_CRYPTO_MASTER_KEY="$(openssl rand -base64 32)" \
             aegis:ci --dev
 
       - name: Wait for readiness
