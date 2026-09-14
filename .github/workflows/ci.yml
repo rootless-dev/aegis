@@ -129,14 +129,14 @@ jobs:
       #
       # --dev because sqlite is refused outside development, and the engine
       # matrix already covers the engines a customer runs: what is under test
-      # here is the image, not the database. DATABASE_PATH is spelled out
+      # here is the image, not the database. AEGIS_DATABASE_PATH is spelled out
       # because the default is relative, the working directory is /, and the
       # image runs as nonroot.
       - name: Run it
         run: |
           docker run -d --rm --name aegis-ci \
             -p 7500:7500 \
-            -e DATABASE_PATH=/tmp/aegis-ci.db \
+            -e AEGIS_DATABASE_PATH=/tmp/aegis-ci.db \
             aegis:ci --dev
 
       - name: Wait for readiness

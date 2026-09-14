@@ -17,7 +17,7 @@ that scheme, so a URL copied between them still works.
 HTTPS is one variable away:
 
 ```sh
-TLS_TERMINATION=app make run   # https://localhost:7500
+AEGIS_TLS_TERMINATION=app make run   # https://localhost:7500
 ```
 
 Under the dev profile that also mints the certificate in memory, so there is no
@@ -34,14 +34,14 @@ produce the same configuration, and only an operator can tell them apart.
 
 No development loop exercises TLS or `CertificateSource` any more. The listener
 built from a generated certificate now lives only in the unit tests and in one
-integration test that opts in with `TLS_TERMINATION=app` — and in production,
+integration test that opts in with `AEGIS_TLS_TERMINATION=app` — and in production,
 where a break would be found by a customer.
 
 This deserves revisiting when sessions arrive. A `Secure` cookie is not stored
 by the browser over plain HTTP, and the HSTS header is only sent over HTTPS, so
 neither would be exercised by the loop that is about to grow login forms. Either
 the default goes back to `app` then, or the session work runs against
-`TLS_TERMINATION=app` deliberately.
+`AEGIS_TLS_TERMINATION=app` deliberately.
 
 `make assets` generates `internal/templates/assets/css/app.css` with the
 Tailwind standalone CLI, downloaded and checksum-verified into `bin/` on first
@@ -93,7 +93,7 @@ The overlay also brings up a Postgres of its own, which the application waits
 for before starting — it connects during assembly, so starting them together
 would only crash-loop until the server answered.
 
-It also selects the development profile and declares `TLS_TERMINATION=none`, so
+It also selects the development profile and declares `AEGIS_TLS_TERMINATION=none`, so
 the pod speaks plain HTTP and the probes are the base ones, unpatched. The
 forwarded port is therefore `http://localhost:7500`, the same address the other
 run paths use.

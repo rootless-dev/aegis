@@ -28,11 +28,11 @@ make        # every target, grouped
 
 The service listens on `:7500` and answers `/livez` and `/readyz`. `make run`
 uses the development profile, which serves plain HTTP, so reach it at
-`http://localhost:7500`. `TLS_TERMINATION=app` opts into HTTPS there, on a
+`http://localhost:7500`. `AEGIS_TLS_TERMINATION=app` opts into HTTPS there, on a
 certificate generated in memory at every boot.
 
 The schema is migrated on boot by default, so an empty database needs nothing
-extra. With `DATABASE_MIGRATE_ON_BOOT=false` — the multi-replica setup — run
+extra. With `AEGIS_DATABASE_MIGRATE_ON_BOOT=false` — the multi-replica setup — run
 `aegisd migrate` yourself first; a boot against a schema behind this binary is
 refused either way. See [docs/deployment.md](docs/deployment.md).
 
