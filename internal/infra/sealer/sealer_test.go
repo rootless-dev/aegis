@@ -168,8 +168,9 @@ func TestNewRefusesAPreviousKeyEqualToTheCurrent(t *testing.T) {
 }
 
 func TestKEKIDIsStableAndKeySpecific(t *testing.T) {
-	if sealer.KEKID(currentKey) != sealer.KEKID(currentKey) {
-		t.Error("want a stable id, got two values")
+	first, second := sealer.KEKID(currentKey), sealer.KEKID(currentKey)
+	if first != second {
+		t.Errorf("want a stable id, got %q then %q", first, second)
 	}
 
 	if sealer.KEKID(currentKey) == sealer.KEKID(previousKey) {

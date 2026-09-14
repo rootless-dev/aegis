@@ -95,19 +95,32 @@ func New(
 // Rehydrate is the repository's door back in. It takes the stored kid as
 // given: recomputing an identity on every read is how a stored value and a
 // derived value drift apart with no symptom.
-func Rehydrate(
-	id uuid.UUID,
-	realmID uuid.UUID,
-	kid string,
-	purpose Purpose,
-	algorithm Algorithm,
-	status Status,
-	publicKeyDER []byte,
-	sealed []byte,
-	kekID string,
-	createdAt time.Time,
-	updatedAt time.Time,
-) (*Key, error) {
+// Stored is one row as the repository read it, named so the eleven values a
+// key is made of arrive as a record rather than as an argument list nobody can
+// call without counting.
+type Stored struct {
+	ID      uuid.UUID
+	RealmID uuid.UUID
+	KID     string
+
+	Purpose   Purpose
+	Algorithm Algorithm
+	Status    Status
+
+	PublicKeyDER []byte
+	Sealed       []byte
+	KEKID        string
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func Rehydrate(row Stored) (*Key, error) {
+	id, realmID, kid := row.ID, row.RealmID, row.KID
+	purpose, algorithm, status := row.Purpose, row.Algorithm, row.Status
+	publicKeyDER, sealed, kekID := row.PublicKeyDER, row.Sealed, row.KEKID
+	createdAt, updatedAt := row.CreatedAt, row.UpdatedAt
+
 	if id == uuid.Nil || realmID == uuid.Nil {
 		return nil, errors.New("key: a stored key needs an id and a realm")
 	}

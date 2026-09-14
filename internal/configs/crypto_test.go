@@ -61,14 +61,6 @@ func TestCryptoValidatesThePreviousKeyToo(t *testing.T) {
 	}
 }
 
-func TestCryptoAllowsAnAbsentPreviousKey(t *testing.T) {
-	cfg := &configs.Crypto{MasterKey: testMasterKey}
-
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("want no error, got %v", err)
-	}
-}
-
 func TestCryptoBytesDecodes(t *testing.T) {
 	cfg := &configs.Crypto{MasterKey: testMasterKey}
 

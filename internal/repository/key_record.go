@@ -101,9 +101,20 @@ func (rec realmKeyRecord) toDomain() (*key.Key, error) {
 		return nil, err
 	}
 
-	return key.Rehydrate(
-		id, realmID, rec.KID, purpose, algorithm, status,
-		publicKey, sealed, rec.KEKID,
-		rec.CreatedAt.Time(), rec.UpdatedAt.Time(),
-	)
+	return key.Rehydrate(key.Stored{
+		ID:      id,
+		RealmID: realmID,
+		KID:     rec.KID,
+
+		Purpose:   purpose,
+		Algorithm: algorithm,
+		Status:    status,
+
+		PublicKeyDER: publicKey,
+		Sealed:       sealed,
+		KEKID:        rec.KEKID,
+
+		CreatedAt: rec.CreatedAt.Time(),
+		UpdatedAt: rec.UpdatedAt.Time(),
+	})
 }

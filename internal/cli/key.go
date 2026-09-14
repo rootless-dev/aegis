@@ -20,6 +20,20 @@ import (
 	"github.com/rootless-dev/aegis/internal/service"
 )
 
+// The verb names double as the command a usage error names back, so they are
+// written once.
+const (
+	keyList    = "key list"
+	keyRotate  = "key rotate"
+	keyDisable = "key disable"
+	keyEnable  = "key enable"
+	keyRewrap  = "key rewrap"
+)
+
+// argRealm is what requireArgument reports as missing, and every verb but
+// rewrap asks for it.
+const argRealm = "a realm"
+
 func dispatchKey(args []string) ([]string, Runner, error) {
 	if len(args) == 0 {
 		return nil, nil, fmt.Errorf("aegisd: key needs a verb\n\n%s", usage)
@@ -27,34 +41,34 @@ func dispatchKey(args []string) ([]string, Runner, error) {
 
 	switch args[0] {
 	case "list":
-		slug, rest, err := requireArgument(args[1:], "key list", "a realm")
+		slug, rest, err := requireArgument(args[1:], keyList, argRealm)
 		if err != nil {
 			return nil, nil, err
 		}
 
 		run := func(cfg *configs.Application) int { return runKeyList(cfg, slug) }
 
-		return withoutStrayTokens(rest, run, "key list")
+		return withoutStrayTokens(rest, run, keyList)
 	case "rotate":
 		return dispatchKeyRotate(args[1:])
 	case "disable":
-		return dispatchKeyTransition(args[1:], "key disable", runKeyDisable)
+		return dispatchKeyTransition(args[1:], keyDisable, runKeyDisable)
 	case "enable":
-		return dispatchKeyTransition(args[1:], "key enable", runKeyEnable)
+		return dispatchKeyTransition(args[1:], keyEnable, runKeyEnable)
 	case "rewrap":
-		return withoutStrayTokens(args[1:], runKeyRewrap, "key rewrap")
+		return withoutStrayTokens(args[1:], runKeyRewrap, keyRewrap)
 	default:
 		return nil, nil, fmt.Errorf("aegisd: unknown key verb %q\n\n%s", args[0], usage)
 	}
 }
 
 func dispatchKeyRotate(args []string) ([]string, Runner, error) {
-	slug, rest, err := requireArgument(args, "key rotate", "a realm")
+	slug, rest, err := requireArgument(args, keyRotate, argRealm)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	raw, rest, err := requireArgument(rest, "key rotate", "an algorithm")
+	raw, rest, err := requireArgument(rest, keyRotate, "an algorithm")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -67,13 +81,13 @@ func dispatchKeyRotate(args []string) ([]string, Runner, error) {
 
 	run := func(cfg *configs.Application) int { return runKeyRotate(cfg, slug, algorithm) }
 
-	return withoutStrayTokens(rest, run, "key rotate")
+	return withoutStrayTokens(rest, run, keyRotate)
 }
 
 func dispatchKeyTransition(
 	args []string, command string, run func(*configs.Application, string, string) int,
 ) ([]string, Runner, error) {
-	slug, rest, err := requireArgument(args, command, "a realm")
+	slug, rest, err := requireArgument(args, command, argRealm)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -110,12 +110,19 @@ func TestRehydrateTakesTheStoredKID(t *testing.T) {
 
 	// A kid the thumbprint would never produce, so a recomputing Rehydrate
 	// would fail this.
-	back, err := key.Rehydrate(
-		built.ID(), built.RealmID(), "stored-kid",
-		key.PurposeSignature, key.AlgorithmES256, key.StatusPassive,
-		der, []byte("sealed"), "kek",
-		built.CreatedAt(), built.UpdatedAt(),
-	)
+	back, err := key.Rehydrate(key.Stored{
+		ID:           built.ID(),
+		RealmID:      built.RealmID(),
+		KID:          "stored-kid",
+		Purpose:      key.PurposeSignature,
+		Algorithm:    key.AlgorithmES256,
+		Status:       key.StatusPassive,
+		PublicKeyDER: der,
+		Sealed:       []byte("sealed"),
+		KEKID:        "kek",
+		CreatedAt:    built.CreatedAt(),
+		UpdatedAt:    built.UpdatedAt(),
+	})
 	if err != nil {
 		t.Fatalf("want no error, got %v", err)
 	}
@@ -126,12 +133,19 @@ func TestRehydrateTakesTheStoredKID(t *testing.T) {
 }
 
 func TestRehydrateRefusesAnUnparseablePublicKey(t *testing.T) {
-	_, err := key.Rehydrate(
-		uuid.New(), uuid.New(), "kid",
-		key.PurposeSignature, key.AlgorithmES256, key.StatusActive,
-		[]byte("not der"), []byte("sealed"), "kek",
-		time.Now().UTC(), time.Now().UTC(),
-	)
+	_, err := key.Rehydrate(key.Stored{
+		ID:           uuid.New(),
+		RealmID:      uuid.New(),
+		KID:          "kid",
+		Purpose:      key.PurposeSignature,
+		Algorithm:    key.AlgorithmES256,
+		Status:       key.StatusActive,
+		PublicKeyDER: []byte("not der"),
+		Sealed:       []byte("sealed"),
+		KEKID:        "kek",
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	})
 	if err == nil {
 		t.Fatal("want an error, got none")
 	}

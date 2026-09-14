@@ -613,10 +613,10 @@ func (f *fakeKeys) Update(_ context.Context, k *key.Key) error {
 	return nil
 }
 
-func (f *fakeKeys) Rewrap(_ context.Context, k *key.Key) error {
-	f.byID[k.ID()] = k
-
-	return nil
+// The store replaces the aggregate either way; what differs between the two is
+// which columns the real repository writes, which a map cannot express.
+func (f *fakeKeys) Rewrap(ctx context.Context, k *key.Key) error {
+	return f.Update(ctx, k)
 }
 
 func (f *fakeKeys) ListStaleKEK(_ context.Context, kekID string, limit int) ([]*key.Key, error) {
