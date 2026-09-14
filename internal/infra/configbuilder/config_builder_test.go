@@ -12,11 +12,13 @@ import (
 	"github.com/rootless-dev/aegis/internal/infra/configbuilder"
 )
 
-// settingPrefixes covers every variable the builder reads.
-var settingPrefixes = []string{
-	"AEGIS_", "APP_", "PUBLIC_URL", "LOGGING_", "HTTP_SERVER_",
-	"TLS_", "PROXY_", "HSTS_", "CSP_", "GRACEFUL_", "HEALTH_", "BANNER_", "DATABASE_",
-}
+// settingPrefixes covers every variable the builder reads: they all carry
+// one prefix now.
+var settingPrefixes = []string{"AEGIS_"}
+
+// The master key has no default and no development fallback, so every chain
+// that validates has to supply one.
+const testMasterKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 
 // TestMain runs these tests against an empty environment. The builder reads the
 // real one, so a developer shell carrying the project .env — which is how the
@@ -34,6 +36,11 @@ func TestMain(m *testing.M) {
 			}
 		}
 	}
+
+	// Put one back. Every profile requires a master key now, so a chain built
+	// without one is invalid for a reason none of these tests is about; the
+	// tests that are about it set their own with t.Setenv.
+	os.Setenv("AEGIS_CRYPTO_MASTER_KEY", testMasterKey)
 
 	os.Exit(m.Run())
 }
@@ -85,7 +92,7 @@ func TestBuildWithoutDefaultsFails(t *testing.T) {
 // gateway terminates TLS is something only the operator knows, and the two
 // answers are indistinguishable from the outside.
 func TestDefaultsAloneRefuseToDecideTheTopology(t *testing.T) {
-	_, err := configbuilder.New().WithDefaults().Normalize().Validate().Build()
+	_, err := configbuilder.New().WithDefaults().WithEnv().Normalize().Validate().Build()
 	if err == nil {
 		t.Fatal("a production boot must not inherit a guess about who terminates TLS")
 	}
@@ -104,7 +111,7 @@ func TestDefaultsAloneRefuseToDecideTheTopology(t *testing.T) {
 }
 
 func TestDefaultsUnderDevelopmentProduceAValidConfiguration(t *testing.T) {
-	cfg, err := configbuilder.New().WithDefaults().WithFlags(development()).Normalize().Validate().Build()
+	cfg, err := configbuilder.New().WithDefaults().WithEnv().WithFlags(development()).Normalize().Validate().Build()
 	if err != nil {
 		t.Fatalf("the development profile must be valid on its own, got %v", err)
 	}
@@ -114,7 +121,7 @@ func TestDefaultsUnderDevelopmentProduceAValidConfiguration(t *testing.T) {
 	}
 
 	// Plain HTTP, so a browser is not asked to accept a new self-signed
-	// certificate on every restart. TLS_TERMINATION=app is the way back.
+	// certificate on every restart. AEGIS_TLS_TERMINATION=app is the way back.
 	if cfg.TLS.Termination != configs.TerminationNone {
 		t.Errorf("termination: want none, got %q", cfg.TLS.Termination)
 	}
@@ -141,7 +148,7 @@ banner:
   enabled: false
 `)
 
-	cfg, err := configbuilder.New().WithDefaults().WithYAML().WithFlags(development()).Normalize().Validate().Build()
+	cfg, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().WithFlags(development()).Normalize().Validate().Build()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,8 +189,8 @@ http_server:
   read_timeout: 45s
 `)
 
-	t.Setenv("HTTP_SERVER_PORT", "7777")
-	t.Setenv("APP_NAME", "from-env")
+	t.Setenv("AEGIS_HTTP_SERVER_PORT", "7777")
+	t.Setenv("AEGIS_APP_NAME", "from-env")
 
 	cfg, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().WithFlags(development()).Normalize().Validate().Build()
 	if err != nil {
@@ -204,7 +211,7 @@ http_server:
 
 func TestMissingFileIsNotAnError(t *testing.T) {
 	// Nothing points at a file, and none of the default paths exist here.
-	builder := configbuilder.New().WithDefaults().WithYAML().WithFlags(development()).Normalize()
+	builder := configbuilder.New().WithDefaults().WithYAML().WithEnv().WithFlags(development()).Normalize()
 	if _, err := builder.Validate().Build(); err != nil {
 		t.Errorf("an absent configuration file must not fail the boot, got %v", err)
 	}
@@ -213,7 +220,7 @@ func TestMissingFileIsNotAnError(t *testing.T) {
 func TestExplicitFileMustExist(t *testing.T) {
 	t.Setenv(configbuilder.ConfigPathEnvVar, "/nonexistent/aegis.yaml")
 
-	_, err := configbuilder.New().WithDefaults().WithYAML().Validate().Build()
+	_, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().Validate().Build()
 	if err == nil {
 		t.Fatal("a path given explicitly must fail when it does not exist")
 	}
@@ -229,7 +236,7 @@ http_server:
   prot: "9000"
 `)
 
-	_, err := configbuilder.New().WithDefaults().WithYAML().Validate().Build()
+	_, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().Validate().Build()
 	if err == nil {
 		t.Fatal("a misspelled key must fail rather than silently do nothing")
 	}
@@ -245,7 +252,7 @@ graceful:
   timeout: 20
 `)
 
-	_, err := configbuilder.New().WithDefaults().WithYAML().Validate().Build()
+	_, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().Validate().Build()
 	if err == nil {
 		t.Fatal("a unitless duration must be rejected")
 	}
@@ -264,7 +271,7 @@ http_server:
   port: 9000
 `)
 
-	cfg, err := configbuilder.New().WithDefaults().WithYAML().WithFlags(development()).Normalize().Validate().Build()
+	cfg, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().WithFlags(development()).Normalize().Validate().Build()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -275,9 +282,9 @@ http_server:
 }
 
 func TestValidateReportsEveryProblemAtOnce(t *testing.T) {
-	t.Setenv("HTTP_SERVER_PORT", "not-a-port")
-	t.Setenv("LOGGING_LEVEL", "banana")
-	t.Setenv("HTTP_SERVER_READ_TIMEOUT", "0s")
+	t.Setenv("AEGIS_HTTP_SERVER_PORT", "not-a-port")
+	t.Setenv("AEGIS_LOGGING_LEVEL", "banana")
+	t.Setenv("AEGIS_HTTP_SERVER_READ_TIMEOUT", "0s")
 
 	_, err := configbuilder.New().WithDefaults().WithEnv().Validate().Build()
 	if err == nil {
@@ -295,7 +302,7 @@ func TestValidateReportsEveryProblemAtOnce(t *testing.T) {
 // An empty variable is treated as absent, so a default cannot be cleared by
 // exporting it empty.
 func TestEmptyVariableFallsBackToDefault(t *testing.T) {
-	t.Setenv("HTTP_SERVER_HOST", "")
+	t.Setenv("AEGIS_HTTP_SERVER_HOST", "")
 
 	cfg, err := configbuilder.New().WithDefaults().WithEnv().WithFlags(development()).Normalize().Validate().Build()
 	if err != nil {
@@ -328,8 +335,9 @@ func TestFlagWinsOverTheEnvironment(t *testing.T) {
 	writeConfig(t, productionDatabase)
 
 	t.Setenv(configbuilder.ProfileEnvVar, "dev")
-	t.Setenv("TLS_TERMINATION", "none")
-	t.Setenv("PUBLIC_URL", "http://aegis.test")
+	t.Setenv("AEGIS_TLS_TERMINATION", "none")
+	t.Setenv("AEGIS_PUBLIC_URL", "http://aegis.test")
+	t.Setenv("AEGIS_CRYPTO_MASTER_KEY", testMasterKey)
 
 	cfg, err := configbuilder.New().
 		WithDefaults().
@@ -372,9 +380,10 @@ func TestAbsentFlagLeavesTheEnvironmentAlone(t *testing.T) {
 func TestTrustedProxiesAreReadAsAList(t *testing.T) {
 	writeConfig(t, productionDatabase)
 
-	t.Setenv("TLS_TERMINATION", "proxy")
-	t.Setenv("PUBLIC_URL", "https://auth.example.com")
-	t.Setenv("PROXY_TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.10 ,")
+	t.Setenv("AEGIS_TLS_TERMINATION", "proxy")
+	t.Setenv("AEGIS_PUBLIC_URL", "https://auth.example.com")
+	t.Setenv("AEGIS_PROXY_TRUSTED_PROXIES", "10.0.0.0/8, 192.168.1.10 ,")
+	t.Setenv("AEGIS_CRYPTO_MASTER_KEY", testMasterKey)
 
 	cfg, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().Normalize().Validate().Build()
 	if err != nil {
@@ -401,8 +410,11 @@ func TestTrustedProxiesAreReadAsAList(t *testing.T) {
 // configuration this binary would actually accept.
 func TestTheExampleFileIsValid(t *testing.T) {
 	t.Setenv(configbuilder.ConfigPathEnvVar, filepath.Join("..", "..", "..", "aegis.example.yaml"))
+	// WithEnv is in the chain only to carry the master key, which the file is
+	// forbidden to hold.
+	t.Setenv("AEGIS_CRYPTO_MASTER_KEY", testMasterKey)
 
-	if _, err := configbuilder.New().WithDefaults().WithYAML().Normalize().Validate().Build(); err != nil {
+	if _, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().Normalize().Validate().Build(); err != nil {
 		t.Errorf("aegis.example.yaml should be valid as shipped, got %v", err)
 	}
 }
@@ -430,8 +442,9 @@ func TestFlagsAreParsedFromTheArguments(t *testing.T) {
 			// Set so "absent" proves the flag stayed out of the way rather than
 			// happening to agree with the default.
 			t.Setenv(configbuilder.ProfileEnvVar, "dev")
-			t.Setenv("TLS_TERMINATION", "none")
-			t.Setenv("PUBLIC_URL", "http://aegis.test")
+			t.Setenv("AEGIS_TLS_TERMINATION", "none")
+			t.Setenv("AEGIS_PUBLIC_URL", "http://aegis.test")
+			t.Setenv("AEGIS_CRYPTO_MASTER_KEY", testMasterKey)
 
 			cfg, err := configbuilder.New().
 				WithDefaults().
@@ -453,14 +466,14 @@ func TestFlagsAreParsedFromTheArguments(t *testing.T) {
 }
 
 func TestDatabaseComesFromTheEnvironment(t *testing.T) {
-	t.Setenv("DATABASE_DRIVER", "mysql")
-	t.Setenv("DATABASE_HOST", "db.internal")
-	t.Setenv("DATABASE_PORT", "3306")
-	t.Setenv("DATABASE_NAME", "aegis")
-	t.Setenv("DATABASE_USER", "aegis")
-	t.Setenv("DATABASE_PASSWORD", "secret")
-	t.Setenv("DATABASE_POOL_MAX_OPEN", "40")
-	t.Setenv("DATABASE_CONNECT_TIMEOUT", "3s")
+	t.Setenv("AEGIS_DATABASE_DRIVER", "mysql")
+	t.Setenv("AEGIS_DATABASE_HOST", "db.internal")
+	t.Setenv("AEGIS_DATABASE_PORT", "3306")
+	t.Setenv("AEGIS_DATABASE_NAME", "aegis")
+	t.Setenv("AEGIS_DATABASE_USER", "aegis")
+	t.Setenv("AEGIS_DATABASE_PASSWORD", "secret")
+	t.Setenv("AEGIS_DATABASE_POOL_MAX_OPEN", "40")
+	t.Setenv("AEGIS_DATABASE_CONNECT_TIMEOUT", "3s")
 
 	cfg, err := configbuilder.New().
 		WithDefaults().
@@ -488,9 +501,9 @@ func TestDatabaseComesFromTheEnvironment(t *testing.T) {
 }
 
 func TestMigrateReadsTheEnvironment(t *testing.T) {
-	t.Setenv("DATABASE_MIGRATE_ON_BOOT", "false")
-	t.Setenv("DATABASE_MIGRATE_TIMEOUT", "90s")
-	t.Setenv("DATABASE_MIGRATE_LOCK_TIMEOUT", "20s")
+	t.Setenv("AEGIS_DATABASE_MIGRATE_ON_BOOT", "false")
+	t.Setenv("AEGIS_DATABASE_MIGRATE_TIMEOUT", "90s")
+	t.Setenv("AEGIS_DATABASE_MIGRATE_LOCK_TIMEOUT", "20s")
 
 	cfg, err := configbuilder.New().
 		WithDefaults().WithEnv().WithFlags(development()).Normalize().Validate().Build()
@@ -499,7 +512,7 @@ func TestMigrateReadsTheEnvironment(t *testing.T) {
 	}
 
 	if cfg.Database.Migrate.OnBoot {
-		t.Error("DATABASE_MIGRATE_ON_BOOT=false must turn migration off")
+		t.Error("AEGIS_DATABASE_MIGRATE_ON_BOOT=false must turn migration off")
 	}
 
 	if cfg.Database.Migrate.Timeout != 90*time.Second {
@@ -512,7 +525,7 @@ func TestMigrateReadsTheEnvironment(t *testing.T) {
 }
 
 func TestMigrateOnBootFlagOverridesTheEnvironment(t *testing.T) {
-	t.Setenv("DATABASE_MIGRATE_ON_BOOT", "true")
+	t.Setenv("AEGIS_DATABASE_MIGRATE_ON_BOOT", "true")
 
 	cfg, err := configbuilder.New().
 		WithDefaults().WithEnv().
@@ -530,7 +543,7 @@ func TestMigrateOnBootFlagOverridesTheEnvironment(t *testing.T) {
 // An absent flag carries no value: the pointer in the flags struct is what
 // keeps a default false from overwriting what an earlier layer set.
 func TestAbsentMigrateFlagLeavesTheEnvironmentAlone(t *testing.T) {
-	t.Setenv("DATABASE_MIGRATE_ON_BOOT", "false")
+	t.Setenv("AEGIS_DATABASE_MIGRATE_ON_BOOT", "false")
 
 	cfg, err := configbuilder.New().
 		WithDefaults().WithEnv().WithFlags(development()).Normalize().Validate().Build()
@@ -559,5 +572,28 @@ func TestThePasswordCannotComeFromTheFile(t *testing.T) {
 	_, err := configbuilder.New().WithDefaults().WithYAML().Build()
 	if err == nil {
 		t.Fatal("expected a password in the file to fail the boot")
+	}
+}
+
+func TestEnvAppliesTheMasterKey(t *testing.T) {
+	t.Setenv("AEGIS_CRYPTO_MASTER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+
+	cfg, err := configbuilder.New().WithDefaults().WithEnv().Build()
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+
+	if cfg.Crypto.MasterKey != "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" {
+		t.Errorf("want the key applied, got %q", cfg.Crypto.MasterKey)
+	}
+}
+
+func TestEnvReportsBothSecretFormsSet(t *testing.T) {
+	t.Setenv("AEGIS_CRYPTO_MASTER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	t.Setenv("AEGIS_CRYPTO_MASTER_KEY_FILE", "/tmp/whatever")
+
+	_, err := configbuilder.New().WithDefaults().WithEnv().Build()
+	if err == nil {
+		t.Fatal("want an error, got none")
 	}
 }

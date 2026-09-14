@@ -1,6 +1,8 @@
 package envtools_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -106,5 +108,65 @@ func TestLookupDuration(t *testing.T) {
 	// nanoseconds.
 	if _, ok := envtools.LookupDuration("AEGIS_BAD_TIMEOUT"); ok {
 		t.Error("a unitless value must be rejected")
+	}
+}
+
+func TestLookupSecretReadsTheVariable(t *testing.T) {
+	t.Setenv("TEST_SECRET", "value")
+
+	got, ok, err := envtools.LookupSecret("TEST_SECRET")
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+
+	if !ok || got != "value" {
+		t.Errorf("want (%q, true), got (%q, %v)", "value", got, ok)
+	}
+}
+
+func TestLookupSecretReadsTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret")
+	// The trailing newline a shell or an editor leaves behind has to be trimmed.
+	if err := os.WriteFile(path, []byte("from-a-file\n"), 0o600); err != nil {
+		t.Fatalf("writing the fixture: %v", err)
+	}
+
+	t.Setenv("TEST_SECRET_FILE", path)
+
+	got, ok, err := envtools.LookupSecret("TEST_SECRET")
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+
+	if !ok || got != "from-a-file" {
+		t.Errorf("want (%q, true), got (%q, %v)", "from-a-file", got, ok)
+	}
+}
+
+func TestLookupSecretRefusesBothForms(t *testing.T) {
+	t.Setenv("TEST_SECRET", "value")
+	t.Setenv("TEST_SECRET_FILE", "/tmp/whatever")
+
+	if _, _, err := envtools.LookupSecret("TEST_SECRET"); err == nil {
+		t.Fatal("want an error, got none")
+	}
+}
+
+func TestLookupSecretReportsAMissingFile(t *testing.T) {
+	t.Setenv("TEST_SECRET_FILE", filepath.Join(t.TempDir(), "absent"))
+
+	if _, _, err := envtools.LookupSecret("TEST_SECRET"); err == nil {
+		t.Fatal("want an error, got none")
+	}
+}
+
+func TestLookupSecretReportsAbsence(t *testing.T) {
+	_, ok, err := envtools.LookupSecret("TEST_SECRET_THAT_IS_NOT_SET")
+	if err != nil {
+		t.Fatalf("want no error, got %v", err)
+	}
+
+	if ok {
+		t.Error("want false, got true")
 	}
 }

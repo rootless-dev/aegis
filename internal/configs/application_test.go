@@ -81,6 +81,7 @@ func publicURLConfig(url string, termination configs.Termination) *configs.Appli
 	cfg.PublicURL = url
 	cfg.TLS.Termination = termination
 	cfg.Database = serverDatabase()
+	cfg.Crypto.MasterKey = testMasterKey
 
 	switch termination {
 	case configs.TerminationApp:

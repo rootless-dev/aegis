@@ -64,6 +64,16 @@ run: assets ## Run the server from source, under the development profile
 build: assets ## Compile the server binary
 	go build -o $(BINARY) ./cmd/aegisd
 
+.PHONY: master-key
+master-key: ## Write a master key into .env, unless one is already there
+	@if grep -qs '^AEGIS_CRYPTO_MASTER_KEY=.' .env; then \
+		echo ".env already carries a master key; delete the line to replace it"; \
+	else \
+		[ -s .env ] && [ -n "$$(tail -c 1 .env)" ] && echo "" >> .env; \
+		printf 'AEGIS_CRYPTO_MASTER_KEY=%s\n' "$$(openssl rand -base64 32)" >> .env; \
+		echo "wrote a new AEGIS_CRYPTO_MASTER_KEY into .env"; \
+	fi
+
 .PHONY: assets
 assets: $(TAILWIND_BIN) ## Generate the stylesheet
 	@mkdir -p $(dir $(TAILWIND_OUTPUT))
@@ -192,9 +202,9 @@ image-multiarch: ## Cross build the production image for every target platform
 .PHONY: image-run
 image-run: image ## Run the production image locally
 	docker run --rm -p 7500:7500 \
-		-e HTTP_SERVER_HOST=0.0.0.0 \
-		-e TLS_TERMINATION=none \
-		-e PUBLIC_URL=http://localhost:7500 \
+		-e AEGIS_HTTP_SERVER_HOST=0.0.0.0 \
+		-e AEGIS_TLS_TERMINATION=none \
+		-e AEGIS_PUBLIC_URL=http://localhost:7500 \
 		$(IMAGE):latest
 
 ##@ Development environment

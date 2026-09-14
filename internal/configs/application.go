@@ -33,6 +33,10 @@ type Application struct {
 	HSTS       *HSTS       `yaml:"hsts"`
 	CSP        *CSP        `yaml:"csp"`
 	Database   *Database   `yaml:"database"`
+
+	// Out of YAML, like the database password: a `crypto:` key in the file
+	// fails the boot.
+	Crypto *Crypto `yaml:"-"`
 }
 
 // Default is the base layer every other configuration source writes over.
@@ -57,6 +61,7 @@ func Default() *Application {
 		HSTS:       defaultHSTS(),
 		CSP:        defaultCSP(),
 		Database:   defaultDatabase(),
+		Crypto:     defaultCrypto(),
 	}
 }
 
@@ -120,6 +125,7 @@ func (cfg *Application) sections() []section {
 		{"hsts", cfg.HSTS == nil, func() error { return cfg.HSTS.Validate() }},
 		{"csp", cfg.CSP == nil, func() error { return cfg.CSP.Validate() }},
 		{"database", cfg.Database == nil, func() error { return cfg.Database.Validate(cfg.Profile) }},
+		{"crypto", cfg.Crypto == nil, func() error { return cfg.Crypto.Validate() }},
 	}
 }
 

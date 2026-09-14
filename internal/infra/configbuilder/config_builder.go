@@ -90,7 +90,7 @@ func (b *ConfigBuilder) WithEnv() *ConfigBuilder {
 		return b
 	}
 
-	applyEnv(b.cfg)
+	b.err = errors.Join(b.err, applyEnv(b.cfg))
 
 	return b
 }
