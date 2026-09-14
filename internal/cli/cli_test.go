@@ -146,6 +146,49 @@ func TestAStrayTokenAfterMigrateIsAUsageError(t *testing.T) {
 	}
 }
 
+func TestDispatchKeyList(t *testing.T) {
+	handled, _, run, err := cli.Dispatch([]string{"key", "list", "acme"})
+
+	if !handled || err != nil || run == nil {
+		t.Fatalf("want a runner, got handled=%v run=%v err=%v", handled, run != nil, err)
+	}
+}
+
+func TestDispatchKeyRotateNeedsAnAlgorithm(t *testing.T) {
+	_, _, _, err := cli.Dispatch([]string{"key", "rotate", "acme"})
+	if err == nil {
+		t.Fatal("want a usage error, got none")
+	}
+}
+
+func TestDispatchKeyRotateRefusesAnUnknownAlgorithm(t *testing.T) {
+	_, _, _, err := cli.Dispatch([]string{"key", "rotate", "acme", "HS256"})
+	if err == nil {
+		t.Fatal("want a usage error, got none")
+	}
+}
+
+func TestDispatchKeyDisableNeedsAKID(t *testing.T) {
+	_, _, _, err := cli.Dispatch([]string{"key", "disable", "acme"})
+	if err == nil {
+		t.Fatal("want a usage error, got none")
+	}
+}
+
+func TestDispatchKeyRewrapTakesNoArguments(t *testing.T) {
+	_, _, _, err := cli.Dispatch([]string{"key", "rewrap", "acme"})
+	if err == nil {
+		t.Fatal("want a usage error, got none")
+	}
+}
+
+func TestDispatchUnknownKeyVerb(t *testing.T) {
+	_, _, _, err := cli.Dispatch([]string{"key", "frobnicate"})
+	if err == nil {
+		t.Fatal("want a usage error, got none")
+	}
+}
+
 // The rule is about the first token only: everything from the first dash on is
 // the configuration builder's business, and rejecting it here would be a second
 // flag parser disagreeing with the real one.

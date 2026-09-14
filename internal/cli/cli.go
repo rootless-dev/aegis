@@ -30,6 +30,10 @@ func Dispatch(args []string) (handled bool, remaining []string, run Runner, usag
 		remaining, run, usageErr := dispatchMigrate(args[1:])
 
 		return true, remaining, run, usageErr
+	case "key":
+		remaining, run, usageErr := dispatchKey(args[1:])
+
+		return true, remaining, run, usageErr
 	default:
 		return true, nil, nil, fmt.Errorf("aegisd: unknown command %q\n\n%s", args[0], usage)
 	}
@@ -40,6 +44,12 @@ const usage = `Usage:
   aegisd migrate [flags]            apply pending migrations
   aegisd migrate status [flags]     report the schema version; exits 1 when behind, 2 when dirty
   aegisd migrate force <n> [flags]  record version n and clear the dirty flag
+
+  aegisd key list <realm> [flags]            list a realm's keys
+  aegisd key rotate <realm> <alg> [flags]    make a new key active; the old one goes passive
+  aegisd key disable <realm> <kid> [flags]   take a passive key out of the JWKS
+  aegisd key enable <realm> <kid> [flags]    put a disabled key back as passive
+  aegisd key rewrap [flags]                  reseal every key under the current master key
 
 The subcommand must come first; flags follow it.
 `
