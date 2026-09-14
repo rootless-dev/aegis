@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// whereID is the predicate every single-row operation in this file shares.
+// whereID is the predicate every single-row operation in this package shares.
 const whereID = "id = ?"
 
 type realmRepository struct {
@@ -20,7 +20,7 @@ type realmRepository struct {
 func (r realmRepository) Create(ctx context.Context, aggregate *realm.Realm) error {
 	record := fromDomain(aggregate)
 
-	return translate(r.db.WithContext(ctx).Create(&record).Error)
+	return translate(r.db.WithContext(ctx).Create(&record).Error, realm.ErrNotFound)
 }
 
 func (r realmRepository) FindByID(ctx context.Context, id uuid.UUID) (*realm.Realm, error) {
@@ -39,7 +39,7 @@ func (r realmRepository) first(ctx context.Context, where string, arg any) (*rea
 	var record realmRecord
 
 	if err := r.db.WithContext(ctx).Where(where, arg).First(&record).Error; err != nil {
-		return nil, translate(err)
+		return nil, translate(err, realm.ErrNotFound)
 	}
 
 	return record.toDomain()
@@ -75,7 +75,7 @@ func (r realmRepository) List(ctx context.Context, q service.RealmQuery) ([]*rea
 	var records []realmRecord
 
 	if err := query.Find(&records).Error; err != nil {
-		return nil, translate(err)
+		return nil, translate(err, realm.ErrNotFound)
 	}
 
 	aggregates := make([]*realm.Realm, 0, len(records))
@@ -104,15 +104,7 @@ func (r realmRepository) Update(ctx context.Context, aggregate *realm.Realm) err
 			"updated_at":   Timestamp(aggregate.UpdatedAt()),
 		})
 
-	if result.Error != nil {
-		return translate(result.Error)
-	}
-
-	if result.RowsAffected == 0 {
-		return realm.ErrNotFound
-	}
-
-	return nil
+	return applied(result, realm.ErrNotFound)
 }
 
 // Separate from Update because the issuer is immutable by design. Two callers:
@@ -127,13 +119,5 @@ func (r realmRepository) Reissue(ctx context.Context, id uuid.UUID, issuer strin
 			"updated_at": Timestamp(nowUTC()),
 		})
 
-	if result.Error != nil {
-		return translate(result.Error)
-	}
-
-	if result.RowsAffected == 0 {
-		return realm.ErrNotFound
-	}
-
-	return nil
+	return applied(result, realm.ErrNotFound)
 }
