@@ -21,6 +21,8 @@ func developmentConfig(t *testing.T) *configs.Application {
 
 	cfg := configs.Default()
 	cfg.Profile = configs.ProfileDev
+	// Required in every profile, so development carries one like any other.
+	cfg.Crypto.MasterKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 	cfg.Normalize()
 	cfg.Database.Path = filepath.Join(t.TempDir(), "aegis.db")
 

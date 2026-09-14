@@ -45,6 +45,24 @@ func (app *Application) setRouter() error {
 		group.Use(middleware.Recoverer(app.logger, response.ServerError))
 
 		app.surfaces = group
+
+		// Mounted rather than inline: chi assigns an inline group's NotFound to
+		// the parent mux, so only a mounted one keeps a wrong path under
+		// /realms from answering the page surface's HTML.
+		branch := chi.NewRouter()
+		app.oidc.Mount(branch)
+
+		branch.NotFound(func(w http.ResponseWriter, _ *http.Request) {
+			response.WriteError(w, http.StatusNotFound, response.Error{Code: response.ErrorInvalidRequest})
+		})
+
+		// The top level router, not branch: a mounted mux matches against the
+		// stripped path, and Allow has to come from the path the client sent.
+		branch.MethodNotAllowed(withAllow(router, func(w http.ResponseWriter, _ *http.Request) {
+			response.WriteError(w, http.StatusMethodNotAllowed, response.Error{Code: response.ErrorInvalidRequest})
+		}))
+
+		app.surfaces.Mount("/realms", branch)
 	})
 
 	router.Group(func(group chi.Router) {

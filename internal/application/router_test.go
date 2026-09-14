@@ -34,6 +34,7 @@ func newTestApplication(t *testing.T, logs *bytes.Buffer) *Application {
 			Proxy:    &configs.Proxy{},
 			HSTS:     &configs.HSTS{},
 			CSP:      &configs.CSP{Enabled: true},
+			Crypto:   &configs.Crypto{MasterKey: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="},
 		},
 		logger: &log.Logger{Writer: log.IOWriter{Writer: logs}},
 	}
@@ -380,6 +381,26 @@ func TestMethodNotAllowedCarriesAllow(t *testing.T) {
 
 	if !strings.Contains(recorder.Body.String(), "That method is not allowed here.") {
 		t.Errorf("the 405 body is not the rendered page:\n%s", recorder.Body.String())
+	}
+}
+
+func TestJWKSRouteAnswersJSONForAWrongPath(t *testing.T) {
+	var logs bytes.Buffer
+
+	app := newTestApplication(t, &logs)
+
+	request := httptest.NewRequest(http.MethodGet, "/realms/master/protocol/openid-connect/nope", nil)
+	recorder := httptest.NewRecorder()
+
+	app.router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", recorder.Code)
+	}
+
+	// The point of the mount: without it this is the page surface's HTML.
+	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("want a json 404 under /realms, got %q", got)
 	}
 }
 
