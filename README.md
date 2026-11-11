@@ -10,8 +10,12 @@ realms.
 > **Status: early.** Realms exist: the schema is migrated on boot or by
 > `aegisd migrate`, and a `master` realm is seeded with its signing keys.
 > Identities and password credentials exist too, created and operated with
-> `aegisd identity`. Nothing authenticates anyone over HTTP yet — no login, no
-> session, no token issuance. See the [roadmap](docs/roadmap.md).
+> `aegisd identity`. A token endpoint per realm authenticates them: a password
+> opens a server-side session and returns a signed access token and a rotating
+> refresh token, and `aegisd session` lists and revokes sessions. Only the
+> `master` realm authenticates for now, and there are no OAuth clients, no
+> authorization code flow, no logout endpoint and no discovery document yet.
+> See the [roadmap](docs/roadmap.md).
 
 ## Requirements
 

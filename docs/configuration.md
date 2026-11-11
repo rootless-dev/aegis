@@ -357,3 +357,17 @@ parallelism 4, fixed in `internal/infra/passhash`. Every stored hash records
 the parameters it was produced with, so raising them is a release that
 re-hashes each password at its next successful login, not a setting; a key
 here would only add the ability to run weaker ones.
+
+Token and session lifetimes, and whether a realm accepts the password grant.
+They belong to a realm, not to the installation, and live in the `realms`
+table as `access_token_ttl`, `session_idle_ttl`, `session_max_ttl` and
+`password_grant` — 5 minutes, 30 minutes, 10 hours, and off everywhere but
+`master`. A configuration key would have been one value for every tenant of a
+multi-tenant service, and a second source able to disagree with the row.
+Nothing changes them yet: no subcommand or endpoint writes those columns, so
+every realm runs on the defaults until the administration API exists. There is
+no refresh token lifetime to set either; a refresh token lives until its
+session's idle deadline.
+
+The signing algorithm of access tokens. It is RS256, with the realm's active
+key.

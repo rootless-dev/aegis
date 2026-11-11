@@ -5,17 +5,19 @@
 ```
 cmd/aegisd                  entry point: signals and exit code, nothing else
 internal/application        assembly and lifecycle
-internal/cli                subcommand dispatch for `aegisd migrate`, `aegisd key`, `aegisd identity` and their verbs
+internal/cli                subcommand dispatch for `aegisd migrate`, `aegisd key`, `aegisd identity`, `aegisd session` and their verbs
 internal/configs            configuration structs, defaults and validation
-internal/domain/realm       the realm aggregate; imports nothing internal
+internal/domain/realm       the realm aggregate and its token and session settings; imports nothing internal
 internal/domain/key         the key aggregate; imports nothing internal
 internal/domain/identity    the identity aggregate; imports nothing internal
 internal/domain/credential  the credential aggregate; imports nothing internal
+internal/domain/session     the session and the refresh tokens bound to it; imports nothing internal
+internal/domain/token       builds and verifies the access token, a JWT in a compact JWS; standard library only
 internal/service            the use cases; declares the interfaces they consume
 internal/repository         implements the service interfaces over GORM
 internal/migrations         the embedded schema SQL, one directory per dialect
 internal/handler/page       the handlers for the HTML surface
-internal/handler/oidc       the handlers for the protocol surface
+internal/handler/oidc       the handlers for the protocol surface: the JWKS and the token endpoint
 internal/http               server, middleware, response format
 internal/http/assets        fingerprints and serves the static files
 internal/http/render        composes layouts with pages and writes HTML, over an injected filesystem
@@ -94,12 +96,13 @@ Inside `internal/service` those interfaces are split by who consumes them, not
 gathered in one file. A repository interface sits beside its service —
 `RealmRepository` and `RealmQuery` in `realm.go`, `RealmKeyRepository` in
 `key.go`, `IdentityRepository` and `IdentityQuery` in `identity.go`,
-`CredentialRepository` in `credential.go` — so one file shows both the use case
+`CredentialRepository` in `credential.go`, `SessionRepository` and
+`RefreshTokenRepository` in `session.go` — so one file shows both the use case
 and the contract it depends on. `ports.go` keeps only what crosses more than
 one use case: `Store`, and the ports reaching outside the process. The split
 was worth doing before it hurt: with two aggregates a single file was 111
-lines, identity and credential have each added a repository since, and session
-and refresh token will do the same.
+lines, and identity, credential, session and refresh token have each added a
+repository since.
 
 `Store` stays accessors and `InTx`, nothing else. It is the one interface every
 fake in the test suite must implement in full, so a method that did work there
@@ -203,10 +206,10 @@ sequenceDiagram
     C->>C: match kid, verify the signature
 ```
 
-Steps 1 and 2 are not served yet: there is no discovery document until the
-endpoints exist to advertise, which is phase 2 of the roadmap. Steps 3 to 5 are
-what this slice built. A client that already knows the `jwks_uri` — because it
-was configured with one — walks the second half today.
+Steps 1 and 2 are not served yet: the discovery document is phase 2 of the
+roadmap. Steps 3 to 5 are what this slice built. A client that already knows
+the `jwks_uri` — because it was configured with one — walks the second half
+today, and since the token endpoint landed it has a token to walk it with.
 
 Keycloak does not encrypt it. Realm keys live there in `COMPONENT_CONFIG` as
 base64 DER in plain text, and confidentiality is delegated downward to disk and
@@ -354,19 +357,23 @@ analogue there, while "give me something that can sign for this realm" does —
 and `crypto.Signer` is the standard library's own name for signing without
 being handed the key. It is the arrangement `CertificateSource` already has,
 where what changes is on the far side of the interface and no caller is edited.
-The shape leaves one trap for whoever assembles the first JWS:
+The shape leaves one trap for whoever assembles a JWS on top of it:
 `ecdsa.PrivateKey.Sign` produces an ASN.1 DER signature, while JWS ES256
 requires the fixed-width `R ‖ S` concatenation — 64 bytes for P-256, each half
 left-padded. A DER signature in a JWS is accepted by nothing. RS256 has no
 equivalent problem, since `rsa.PrivateKey.Sign` with `crypto.SHA256` is already
-the PKCS#1 v1.5 signature that `alg` names.
+the PKCS#1 v1.5 signature that `alg` names. `internal/domain/token` is where
+the conversion now happens, described under
+[Sessions and tokens](#sessions-and-tokens).
 
 There is no signer cache. Opening a seal and parsing a key is cheap next to the
-round trip that fetched the row, nothing signs per request until tokens exist,
-and a cache added now would be an optimisation with no measurement behind it —
-carrying a problem of its own, since a rotation performed on one replica leaves
-every other one signing with what it cached. That is a question for the slice
-that has a consumer to measure.
+round trip that fetched the row, and a cache would carry a problem of its own,
+since a rotation performed on one replica leaves every other one signing with
+what it cached. Tokens exist now, and the only requests that sign are a login
+and a refresh — a login already pays for an argon2id verification, and a
+refresh for several round trips — so there is a consumer, and still no
+measurement saying the signer is what it waits on. Until one does, a cache
+would be an optimisation bought with a correctness problem.
 
 ## Identities and credentials
 
@@ -516,20 +523,22 @@ the password presented was the right one when it was checked.
 
 ### What is deliberately not here
 
-No session and no token: proving a password returns the identity and whether
-its password must be changed, and what a caller does with that is the next
-slice. No realm status check either — `VerifyPassword` takes a realm id, and
-whether a disabled realm may authenticate belongs to the point that resolves a
-realm for authentication, the way `RealmService.Resolve` owns that rule for the
-protocol endpoints. No password policy, beyond refusing the empty string and
+No session and no token in the verification itself: proving a password returns
+the identity and whether its password must be changed, and what is built on
+that answer is `SessionService`, described under
+[Sessions and tokens](#sessions-and-tokens). No realm status check either —
+`VerifyPassword` takes a realm id, and whether a disabled realm may
+authenticate is decided by its caller, `SessionService.Login`, before a
+password is looked at. No password policy, beyond refusing the empty string and
 the 1024 byte bound. Nothing seeded at boot, and no bootstrap of the first
 administrator: an installation has no identity until someone creates one.
 
-One limit is worth stating before it is met. At 64 MiB per verification,
-concurrent logins multiply memory, and nothing bounds how many run at once.
-That is harmless while the only caller is an operator at a terminal and becomes
-a real question the day an HTTP login endpoint exists, where the number of
-simultaneous verifications is chosen by whoever is sending requests.
+One limit was stated here before it was met, and it is met now. At 64 MiB per
+verification, concurrent logins multiply memory, and nothing bounds how many
+run at once. That was harmless while the only caller was an operator at a
+terminal. The token endpoint is an HTTP login, so the number of simultaneous
+verifications is now chosen by whoever is sending requests, and nothing in
+this phase limits it.
 
 ### `aegisd identity`
 
@@ -546,8 +555,10 @@ read from `AEGIS_IDENTITY_PASSWORD`, or from the file
 refusal to pick a winner when both are set, as the master key. `create` without
 either leaves the identity with no credential, unable to authenticate until
 `set-password` gives it one. `--temporary` sets `must_change` on the credential:
-the password is good for one login and has to be replaced at it, which is what
-an administrator handing out a first password means. It describes a password,
+the password is meant to be good for one login and replaced at it, which is
+what an administrator handing out a first password means — though nothing
+enforces the replacement yet, as
+[Sessions and tokens](#sessions-and-tokens) explains. It describes a password,
 so passing it with none supplied is a usage error rather than a flag silently
 ignored.
 
@@ -558,6 +569,402 @@ configuration validates without one. It also needs the realm to exist, and the
 against a database that has only been migrated, it reports that there is no
 such realm. An archived realm is refused; a disabled one is not, since
 disabling a realm is not a reason to stop administering it.
+
+## Sessions and tokens
+
+Proving a password now produces something. A login opens a **session**, a row
+on the server, and hands back two tokens: an **access token**, a signed JWT
+that lives for minutes and is never looked up in the database, and a **refresh
+token**, an opaque secret bound to that session and replaced every time it is
+used.
+
+It is the middle road between two simpler designs, and each of those fails
+somewhere this one does not. A token that is only a row has to be looked up on
+every request by everything that accepts it, which puts the identity provider
+and its database on the path of every call in the customer's system. A token
+that is only a signature needs no lookup and cannot be taken back: once signed
+it is good until it expires, whatever happened to the person since. Splitting
+the two jobs keeps what is good in each. Validating an access token stays
+offline and cheap — a signature check against the realm's JWKS — and the
+refresh is the one request that has to reach the server, so that is where
+revocation bites. Ending a session makes its next refresh fail at once and
+leaves the access token already out there at most the minutes it had left.
+Those minutes are the window in which a revoked session still works, which is
+the whole reason the access token is short-lived: its TTL is not a convenience
+setting, it is the upper bound on how late a revocation can arrive.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as client
+    participant X as thief
+    participant A as aegis
+    participant D as database
+
+    C->>A: POST token, grant_type=password
+    A->>D: insert the session and the hash of R1
+    A-->>C: access token and R1
+    C->>A: POST token, grant_type=refresh_token, presenting R1
+    A->>D: mark R1 used while used_at is still null, insert R2 with R1 as parent, touch the session
+    A-->>C: a new access token and R2
+    X->>A: POST token, grant_type=refresh_token, presenting R1 again
+    A->>D: R1 was already used, end the session with reason reuse
+    A-->>X: 400 invalid_grant
+    C->>A: POST token, grant_type=refresh_token, presenting R2
+    A-->>C: 400 invalid_grant, because the session has ended
+```
+
+### The session and its two deadlines
+
+A session carries two deadlines, and they are kept differently on purpose. The
+absolute one, `expires_at`, is fixed at creation from the realm's
+`session_max_ttl` and never moves: however active a session is, it ends there,
+so a stolen session cannot be kept alive forever by refreshing it. The idle one
+is not a column at all. It is computed at the moment of the check, from
+`last_seen_at` and the realm's `session_idle_ttl` as the realm holds it then,
+and capped at the absolute deadline. Stored, it would have frozen each session
+at the idle TTL in force when it was last used, and a realm that shortened the
+value after an incident would have tightened only the sessions opened
+afterwards. Computed, shortening it tightens the sessions that already exist,
+at their next refresh. Both deadlines are exclusive: at exactly that instant
+the session is already expired.
+
+"Seen" means refreshed. Nothing else reaches the server on behalf of a session
+— an access token is validated without it — so `last_seen_at` moves only when a
+refresh succeeds, and an idle session is one whose client has not refreshed
+within the idle TTL.
+
+A session also records the client address and the user agent it was opened
+from, and trusts neither for a decision. They are there so that a list of
+sessions means something to the person reading it. The user agent is whatever
+a client chose to send, so control characters and invalid UTF-8 are removed and
+the rest is cut to the column's 255 bytes; an address that does not parse is
+recorded as unknown instead of failing the login over a header.
+
+A session that ends keeps its row, with `ended_at` and an `end_reason` of
+`revoked`, `reuse` or `realm_disabled`; `ck_sessions_end_reason` admits only
+those and `ck_sessions_ended` forces the two columns to be set together.
+Ending is a write that applies only while `ended_at` is still `NULL`, so a
+session ends once and the first reason is the one that stays.
+
+```mermaid
+erDiagram
+    realms ||--o{ sessions : "fk_sessions_realm, ON DELETE CASCADE"
+    realms ||--o{ refresh_tokens : "fk_refresh_tokens_realm, ON DELETE CASCADE"
+    identities ||--o{ sessions : "fk_sessions_identity, ON DELETE CASCADE"
+    sessions ||--o{ refresh_tokens : "fk_refresh_tokens_session, ON DELETE CASCADE"
+    refresh_tokens |o--o{ refresh_tokens : "fk_refresh_tokens_parent, ON DELETE SET NULL"
+```
+
+Both tables carry their own `realm_id` and every repository method filters on
+it, for the reason `credentials` does: a session or a token of another realm
+is reported as not found, by a query that could not have been written without
+the tenant. `ix_sessions_realm`, `ix_sessions_identity`,
+`ix_refresh_tokens_realm`, `ix_refresh_tokens_session` and
+`ix_refresh_tokens_parent` keep the cascades and the lookups from scanning.
+
+### Refresh tokens
+
+A refresh token is 32 bytes from the system's random source, base64url encoded,
+and what is stored is its SHA-256 in `token_hash`, never the token. A copy of
+the table therefore yields nothing that can be presented. Plain SHA-256 is the
+right function here, where it would be the wrong one for a password: a slow
+hash exists to make guessing expensive, and guessing is only a threat to a
+secret a person chose. This one is 256 random bits. There is no dictionary to
+run against it, and argon2id on every refresh would have bought a slower
+endpoint and no security. `uq_refresh_tokens_hash` makes the hash the lookup
+key.
+
+There is no refresh TTL. A refresh token expires at its session's idle
+deadline as of the moment it was issued, so it cannot outlive the session it
+belongs to, and a setting of its own would only have been a second number able
+to disagree with the first. The one asymmetry this leaves: the token's expiry
+is stored when it is issued, so a realm that later *lengthens* its idle TTL
+does not extend tokens already handed out, while one that shortens it still
+tightens them through the session check.
+
+**Rotation.** Every refresh consumes the token presented and issues a new one,
+whose `parent_id` is the one it replaced — the column records the chain, and
+the first token of a session has none. Consuming is a conditional write:
+`used_at` is set only while it is still `NULL`. Of two requests presenting the
+same token at the same instant, every engine lets exactly one match that row,
+and the other finds nothing to update. Reading the token first and writing
+afterwards, without the condition, would have let both through with a new token
+each.
+
+**Reuse detection.** A token presented after it was consumed is the signal the
+rotation exists to produce. Two parties hold the same token, one of them is not
+the client it was issued to, and the server cannot tell which. So it does not
+try: it ends the session, with the reason `reuse`. That invalidates the whole
+chain without walking it, because a token is only as valid as its session —
+the newest token, in whoever's hands, dies with it, and the person has to log
+in again. The request that loses the conditional write is treated the same way
+as one that arrives a minute later: it too presented a token someone else had
+just consumed.
+
+The cost is real and there is no grace window softening it. A legitimate client
+that retries a refresh it already sent — the response was lost on the way back,
+or two tabs fired at once — presents a consumed token and ends its own session.
+A window in which a consumed token is still honoured would forgive that client
+and, for exactly as long, the thief.
+
+**The reuse check comes before every expiry check.** A token that was consumed
+is usually also expired by the time it is replayed, and its session may be
+perfectly alive, kept so by the tokens that followed. Checked the other way
+round, the replay would be answered as an ordinary expired token, the session
+would carry on, and the one signal that a token had leaked would be thrown away
+on a technicality.
+
+After the reuse check a refresh is refused when the session has ended, when it
+is past either deadline, when the token itself has expired, and when the
+identity is no longer active. A disabled identity therefore keeps no session
+alive: nothing ends its sessions at the moment it is disabled, and none of them
+survives its next refresh.
+
+### Settings per realm
+
+How long things live is the realm's decision, in four typed columns on
+`realms`:
+
+| Column | Default | Meaning |
+| --- | --- | --- |
+| `access_token_ttl` | `300` | seconds an access token is valid |
+| `session_idle_ttl` | `1800` | seconds a session survives without a refresh |
+| `session_max_ttl` | `36000` | seconds a session lives at most |
+| `password_grant` | `false` | whether the password grant is allowed |
+
+They are columns rather than keys in a settings document because a column can
+be constrained and defaulted by the schema: `ck_realms_access_token_ttl`,
+`ck_realms_session_idle_ttl` and `ck_realms_session_max_ttl` refuse a value
+that is not positive, on every engine, whoever wrote it. The rules between
+columns live in the aggregate — whole seconds, at most ten years, and neither
+the idle TTL nor the access TTL longer than the session's maximum — and
+`Rehydrate` enforces them on the way out, since on-prem the customer's DBA can
+write to that table. A realm whose row breaks them is an error, not a realm
+with surprising lifetimes.
+
+They are not configuration, and nothing changes them yet. The aggregate has no
+setter for the TTLs and the repository's update does not write them, so every
+realm runs on the defaults until the administration API exists; the only way
+to another value today is SQL.
+
+`password_grant` is the one that decides whether a realm can authenticate
+anyone at all. Phase 1 has no OAuth clients and no authorization code flow, so
+exchanging a username and a password directly at the token endpoint is the only
+way in. It is on in the `master` realm, where administration lives, and off in
+every other — a realm for a customer's users should not be born accepting
+passwords from any caller that can reach the endpoint, with no client to
+attribute the request to. A new installation creates `master` with it on, and
+a migration turns it on for an installation that already had the row; after
+that the boot leaves it alone, like the status, because an operator who turned
+it off did so on purpose. Nothing can create or reconfigure another realm yet,
+so in practice `master` is the only realm that authenticates today. Turning the
+flag off stops new logins and ends nothing: a refresh does not ask it.
+
+### The access token
+
+The access token is a JWT signed with RS256 by the realm's active key. Its
+header carries `alg`, the `kid` of that key and `typ` `JWT`; its claims are:
+
+| Claim | Value |
+| --- | --- |
+| `iss` | the realm's stored issuer, byte for byte |
+| `sub` | the identity's id |
+| `sid` | the session's id |
+| `jti` | an identifier of this token alone |
+| `iat`, `exp` | issue and expiry, in whole seconds |
+
+`sub` is the id and never the email. An email is an attribute that changes
+and, per realm, can be given to someone else later; a token consumer that keyed
+its own records on it would hand one person's data to another. `sid` is what
+lets a token be traced to the session that can be revoked. `exp` is the issue
+time plus the realm's `access_token_ttl`, and never past the session's absolute
+deadline — a session in its last minute issues a token good for that minute,
+so no access token outlives the session behind it.
+
+There is no `aud`. An audience names the client or the API a token is meant
+for, and there is no client to name until phase 2; a made-up value would be a
+claim every consumer learns to ignore. ES256 keys exist per realm and are
+published, and nothing signs with them yet.
+
+### A JWS built by hand
+
+`internal/domain/token` builds and verifies the JWS with the standard library
+alone, as `internal/domain/key` does the JWK. The format is three base64url
+segments and a signature; what a library would add is flexibility — more
+algorithms, more header parameters, key resolution from the token — and each
+of those is a way JWT verification has gone wrong in practice. Written by hand,
+the package supports what aegis issues and refuses everything else.
+
+Most of what verification refuses, it refuses before it looks a key up:
+
+- an `alg` other than RS256 or ES256, so `none` and HS256 never reach a key.
+  HS256 is the classic confusion: a verifier that lets the token choose would
+  check an HMAC keyed with the RSA *public* key, which everyone has;
+- a header carrying `jku`, `jwk`, `x5u` or `x5c`, which invite the verifier to
+  fetch or accept a key the token itself supplies, and `crit`, which names
+  extensions that must be understood and are not;
+- a `typ` that is present and is not `JWT`, and a missing `kid`;
+- a JSON object with the same member twice. Unmarshalling keeps the last one
+  silently, and another parser may keep the first, so two readers of one token
+  could disagree about what it says. The members are walked one at a time
+  instead;
+- anything that is not three segments of strict, unpadded base64url, or is
+  longer than 4096 bytes.
+
+Then the key decides the algorithm, never the token alone. The key the `kid`
+resolves to must be of the type `alg` names — an RSA key of at least 2048 bits
+for RS256, a P-256 key for ES256 — and a key of the other type is refused
+rather than tried. Only after the signature verifies are the claims read:
+`iss`, `sub`, `sid` and `jti` must be present, `exp` is exclusive, and an `iat`
+or `nbf` more than sixty seconds in the future is refused. The issuer is
+returned and not judged, because comparing it with the realm's is the caller's
+job and the package knows no realm.
+
+Signing handles the trap the realm keys section left for it. A
+`crypto.Signer` over an ECDSA key returns an ASN.1 DER signature, and the
+package converts it to the fixed-width `R ‖ S` that ES256 requires, each half
+left-padded to 32 bytes; verification accepts exactly 64 bytes and nothing
+else.
+
+Nothing in the server verifies an access token yet, because no endpoint accepts
+one. The verification exists, and is tested against the tokens the service
+issues, so that the first endpoint to take a bearer token does not arrive
+together with the code that decides whether to believe it.
+
+### The token endpoint
+
+`POST /realms/{realm}/protocol/openid-connect/token` is Keycloak's path, taken
+for the reason the JWKS path was: no specification fixes one, and compatibility
+with the product customers migrate from is the only argument on the table. It
+takes `grant_type=password` with `username` and `password`, or
+`grant_type=refresh_token` with `refresh_token`, and answers `access_token`,
+`token_type` `Bearer`, `expires_in`, `refresh_token`, `refresh_expires_in` and
+`session_state`, the session's id.
+
+Parameters are read from the body and only from the body, which must be
+`application/x-www-form-urlencoded` and at most 16 KiB. A password accepted
+from the query string would be a password in every access log between the
+client and the process. A parameter sent twice is an error and one sent empty
+counts as absent, as RFC 6749 section 3.2 asks. Every response carries
+`Cache-Control: no-store` and `Pragma: no-cache`, the refusals included: the
+headers are set before anything is decided, so no path can forget them.
+
+Every refusal is a `400` in the OAuth 2 error format:
+
+| Situation | `error` |
+| --- | --- |
+| wrong content type, unreadable body, repeated or missing parameter | `invalid_request` |
+| a grant type other than the two | `unsupported_grant_type` |
+| unknown login, wrong password, no password, disabled identity | `invalid_grant` |
+| refresh token unknown, consumed, expired, its session ended or expired, or its identity disabled | `invalid_grant` |
+| the realm is disabled | `invalid_grant` |
+| the realm does not allow the password grant | `unauthorized_client` |
+
+An unknown or archived realm is the `404` every protocol endpoint answers, and
+anything unexpected is a `500` with `server_error` and the cause in the log.
+
+Inside a family the failures are indistinguishable, and that is the point of
+the table having so few rows. A wrong password and a disabled identity get the
+same code and the same description, on top of the equal cost the verification
+already pays, so the endpoint does not confirm which logins exist. The six
+ways a refresh token can be refused — unknown, already consumed, expired, its
+session ended, its session expired, its identity disabled — share one
+description too: the difference
+between them is exactly what someone holding a stolen token would like to
+know, starting with whether the theft was noticed. Two refusals are not
+disguised. A disabled realm and a realm without the password grant say so,
+before any credential is examined, because they describe the realm and not an
+account, and a client integrator has to be able to tell a misconfiguration from
+a wrong password. A disabled realm is `invalid_grant` because, of the codes RFC
+6749 section 5.2 offers, it is the only one about the grant not being
+honoured; the others blame the request or the client.
+
+What reaches the log follows the same care. A credential or a token is never
+logged, in any form — not the password, not a refresh token, not its hash. A
+refused login logs the realm and the client address at `INFO` and **not the
+username**: what gets typed into a login field by mistake is, often enough, the
+password, and a log of failed usernames is a log of passwords in the wrong
+box. A refused refresh logs the same two fields at `INFO`. Reuse is the
+exception in level, a `WARN` reading `refresh token reuse detected`, because it
+is the one refusal that says something may have been stolen and an operator
+should be able to alert on it.
+
+### Disabled realms, disabled identities, temporary passwords
+
+A disabled realm issues nothing, refresh included. Its live sessions are ended
+in the same transaction that changes its status, with the reason
+`realm_disabled`, and they do not come back when the realm is enabled again:
+re-enabling restores the ability to log in, not the logins that existed.
+Leaving them suspended instead would have made re-enabling a realm quietly
+resurrect sessions nobody could see in the meantime. Archiving goes through
+the same path. What a disabled realm keeps doing is serve its JWKS, for the
+reason given under [Realm signing keys](#realm-signing-keys): the access tokens
+already signed stay valid for their remaining minutes either way, and
+withholding the keys would only make that look like a rotation.
+
+That end of sessions belongs to `RealmService.SetStatus`. No command or
+endpoint calls it yet, and a status changed directly in SQL stops issuance —
+every login and refresh checks the status — without ending anything.
+
+`must_change` does not stop a login in this phase. A password marked for
+replacement still gets tokens, and the endpoint logs a `WARN` with the realm
+and the session. Refusing would have been the stricter reading, and it would
+have locked out every identity created with `--temporary`, since there is no
+change-password flow to send it through yet. Until one exists,
+`aegisd identity set-password` is what clears the flag.
+
+### What is deliberately not here
+
+No logout and no revocation endpoint: ending a session is `SessionService` and
+the `aegisd session` subcommand, and nothing a client can call. No
+introspection, so a resource server cannot ask whether a session behind an
+access token is still alive; it has the signature and `exp`. No discovery
+document. No purge: ended and expired sessions and their consumed tokens stay
+in the tables and accumulate until a later slice removes them. No query reads
+`ix_sessions_expires` yet; it indexes the column such a purge would select on.
+
+No rate limiting and no brute-force protection on the endpoint. Each password
+attempt costs the server an argon2id verification and 64 MiB while it runs,
+and nothing bounds how many run at once or how many one caller may make. Until
+phase 4 of the roadmap, that protection belongs to whatever sits in front of
+the service.
+
+Changing a password does not end the identity's sessions. Someone who resets a
+password because it leaked has to revoke the sessions too, with
+`aegisd session revoke-all`.
+
+One race is left open. A login reads the realm's status at the start of the
+request, spends tens of milliseconds verifying the password, and inserts its
+session without reading the realm again. A realm disabled inside that window
+ends the sessions that exist at that moment, and the login's session is
+inserted after it, live, in a disabled realm. It is inert there, since every
+refresh checks the status — but if the realm is enabled again before that
+session's idle deadline, it is usable, which is the one case where a session
+outlives a disable. Its access token is valid for its few minutes regardless,
+like any other issued just before.
+
+### `aegisd session`
+
+`aegisd session` is the revocation surface for now: `list` and `revoke-all`
+take a realm and a login, `revoke` takes a realm and a session id, and all
+three run with no server, through the same service the token endpoint uses.
+`list` prints an identity's sessions newest first, ended ones included, with
+each one's state — `live`, `expired`, or `ended:` and the reason — computed
+against the realm's idle TTL at the moment of asking, the way a refresh would
+judge it. `revoke` ends one session and reports an error for one that had
+already ended, since "revoked" would be a lie about a session that ended for
+reuse an hour earlier. `revoke-all` ends every live session of the identity
+and says how many.
+
+The session id `revoke` takes is the `session_state` of the token response and
+the `sid` of the access token, so a token in hand is enough to find the session
+to end. It is parsed before the database is opened: a mistyped id is a usage
+error, not a connection and a lookup.
+
+Revoking ends the refresh and nothing else. The access token already issued
+stays valid until its `exp`, which is the trade described at the top of this
+section, seen from the operator's chair.
 
 ## Startup
 
@@ -581,13 +988,17 @@ is enabled — and then verifies the schema version regardless of whether a
 migration ran: the check is not conditional on it, because an operator who
 forgot `aegisd migrate` with migration on boot disabled would otherwise serve
 requests until the first query touched a missing column. `setServices` builds
-the store, the key service, the realm service and the identity and credential
-services, and then seeds the master realm; it is a step of its own, separate
-from `setSchema`, because the seed needs services something has to own — built
-as locals instead, the admin API would end up constructing a second set that is
-not the application's. Nothing is seeded for the last two: the boot creates no
-identity and no credential, in any profile, and no request reaches either
-service yet — they are held for the surfaces that will.
+the store, the key service, the realm service, the identity and credential
+services and the session service, and then seeds the master realm; it is a
+step of its own, separate from `setSchema`, because the seed needs services
+something has to own — built as locals instead, the admin API would end up
+constructing a second set that is not the application's. The session service
+is built from the credential service and the key service, which it reaches as
+a `SignerSource`: it verifies passwords through the one and signs through the
+other, and holds no second path to either. Nothing is seeded for identities,
+credentials or sessions: the boot creates none, in any profile. The session
+service is the one the token endpoint calls, handed to the protocol handler in
+`setWeb`; the identity service is still reached only from the command line.
 
 ```mermaid
 flowchart TD
@@ -695,7 +1106,8 @@ flowchart TD
     BASE --> PAGE["page surface<br/>recover into HTML, security headers"]
 
     API --> MOUNT["/realms mounted<br/>own 404 and 405, in JSON"]
-    MOUNT --> JWKS["{realm}/protocol/openid-connect/certs"]
+    MOUNT --> JWKS["GET {realm}/protocol/openid-connect/certs"]
+    MOUNT --> TOKEN["POST {realm}/protocol/openid-connect/token"]
     PAGE --> ROOTPAGE["/ and the HTML 404"]
 ```
 
@@ -721,9 +1133,11 @@ surface included. Only `chi.Mount` builds a mux that carries handlers of its
 own. Without the mount, a wrong path under `/realms/...` would fall through to
 the page surface and answer an HTML 404, and an HTML document is the wrong
 reply at a protocol endpoint: it is read by a client library, not by a browser.
-The branch exists now, with its own 404 and 405 in the OAuth 2 error format,
-so that every protocol endpoint added later lands inside it rather than
-recreating the decision.
+The branch was built with its own 404 and 405 in the OAuth 2 error format so
+that every protocol endpoint added later would land inside it rather than
+recreate the decision, and the token endpoint is the first to do so: it is
+registered beside the JWKS, for `POST` only, and a `GET` there is the branch's
+405 in JSON without the handler having been written to say so.
 
 The response format comes from the route group, never from the `Accept`
 header. Negotiating it on the error path would make the format depend on

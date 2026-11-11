@@ -31,10 +31,19 @@ kept apart from it, passwords hashed with argon2id and verified without
 revealing whether a login exists, and an `aegisd identity` subcommand that
 creates identities, sets passwords and disables or enables them from the
 command line. Nothing is seeded for them, so an installation has no identity
-until an operator creates one. No HTTP endpoint authenticates anyone yet, and
-nothing signs a token. The list below is the whole phase; sessions, tokens, the
-first administrator's bootstrap and the administrative scope are what is still
-ahead in it.
+until an operator creates one. Then what the phase was named for: a token
+endpoint per realm, at Keycloak's path, where a password opens a server-side
+session and returns an access token — a JWT signed by the realm's key and
+verifiable against its JWKS — together with an opaque refresh token that is
+rotated on every use, stored only as a hash, and ends its whole session when
+it is presented twice. The lifetimes are columns on the realm, and so is the
+switch that allows the password grant, which is on in `master` and off
+everywhere else. An `aegisd session` subcommand lists and revokes sessions,
+and is the only revocation there is: no logout, no introspection and no
+discovery document until phase 2, no rate limiting on the endpoint until
+phase 4, and nothing yet removes the rows of sessions that are over. The list
+below is the whole phase; the first administrator's bootstrap and the
+administrative scope are what is still ahead in it.
 
 - `realm` as the isolation boundary, with its own issuer and signing keys
 - `identity` scoped to a realm, unique per realm rather than globally

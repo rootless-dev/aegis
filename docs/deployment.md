@@ -176,7 +176,8 @@ setting a password seals nothing, and still runs only where the master key is
 present. The password it sets comes from `AEGIS_IDENTITY_PASSWORD` or, better
 where a secret can be mounted, from the file `AEGIS_IDENTITY_PASSWORD_FILE`
 names — never from the command line, where it would show in `ps` and in the
-pod's recorded command.
+pod's recorded command. `aegisd session`, which lists and revokes sessions, is
+under it too.
 
 ### Backups
 
@@ -210,6 +211,35 @@ where it stopped, and running it after it finished does nothing. Once a run
 finds nothing left to move, drop `AEGIS_CRYPTO_MASTER_KEY_PREVIOUS` and restart. A
 process still holding a previous key says so in a log line on every boot, which
 is what keeps a half-finished rewrap from being forgotten.
+
+## The token endpoint
+
+`POST /realms/{realm}/protocol/openid-connect/token` is the first endpoint that
+takes a password from the network, and three things about it are the
+deployment's to handle, because nothing in this version does.
+
+It is not rate limited. Every password attempt costs the process an argon2id
+verification — about 64 MiB of memory while it runs — and nothing bounds how
+many run at once or how many one caller may send. Put the limit in the gateway
+in front of it, per client address, and size the pod's memory for the
+concurrency that limit allows rather than for the idle process.
+
+Sessions and refresh tokens are never deleted. A session that ended or expired
+keeps its row in `sessions`, and every refresh adds a row to `refresh_tokens`,
+so both tables grow with use until a later version purges them. Deleting a
+session row by hand takes its tokens with it through the foreign key.
+
+The client address recorded on each session, and logged when a login or a
+refresh is refused, is the one the forwarding decision attributes the request
+to. Behind a gateway that is not listed in `proxy.trusted_proxies`, that is the
+gateway's own address on every session.
+
+The lifetimes — five minutes for an access token, thirty idle minutes and ten
+hours at most for a session — are columns of the realm and not configuration;
+see [configuration](configuration.md#what-is-not-configurable). Revoking a
+session with `aegisd session revoke` stops its next refresh and leaves the
+access token already issued valid until it expires, so the access token
+lifetime is also how long a revocation takes to be complete.
 
 ## Migrations
 
