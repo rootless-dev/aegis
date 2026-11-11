@@ -11,6 +11,7 @@ import (
 	"github.com/rootless-dev/aegis/internal/domain/identity"
 	"github.com/rootless-dev/aegis/internal/domain/key"
 	"github.com/rootless-dev/aegis/internal/domain/realm"
+	"github.com/rootless-dev/aegis/internal/domain/session"
 )
 
 // Driver text captured from MySQL 8.0: the duplicate value is quoted ahead of
@@ -63,6 +64,13 @@ func TestTranslateOnlyReadsAUniqueViolationAsATakenValue(t *testing.T) {
 			credential.ErrExists,
 		},
 		"a not null violation on the credential type": {"NOT NULL constraint failed: credentials.type", nil},
+
+		"a unique violation on the token hash": {
+			"UNIQUE constraint failed: refresh_tokens.token_hash",
+			session.ErrHashInvalid,
+		},
+		"a not null violation on the token hash": {"NOT NULL constraint failed: refresh_tokens.token_hash", nil},
+		"a unique violation on the token id":     {"UNIQUE constraint failed: refresh_tokens.id", nil},
 	}
 
 	for name, tc := range tests {

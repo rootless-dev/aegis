@@ -8,6 +8,7 @@ import (
 	"github.com/rootless-dev/aegis/internal/domain/identity"
 	"github.com/rootless-dev/aegis/internal/domain/key"
 	"github.com/rootless-dev/aegis/internal/domain/realm"
+	"github.com/rootless-dev/aegis/internal/domain/session"
 	"gorm.io/gorm"
 )
 
@@ -50,6 +51,8 @@ func translate(err error, notFound error) error {
 			return identity.ErrUsernameTaken
 		case strings.Contains(message, "credentials.type"):
 			return credential.ErrExists
+		case strings.Contains(message, "refresh_tokens.token_hash"):
+			return session.ErrHashInvalid
 		}
 	}
 
@@ -67,6 +70,7 @@ var uniqueConstraints = []struct {
 	{"uq_identities_email", identity.ErrEmailTaken},
 	{"uq_identities_username", identity.ErrUsernameTaken},
 	{"uq_credentials_type", credential.ErrExists},
+	{"uq_refresh_tokens_hash", session.ErrHashInvalid},
 }
 
 // The last name in the message wins: MySQL and MariaDB quote the duplicate

@@ -93,15 +93,17 @@ func (r realmRepository) List(ctx context.Context, q service.RealmQuery) ([]*rea
 }
 
 // Names its columns rather than saving the record, so a setter added to the
-// aggregate later cannot reach slug or issuer through here.
+// aggregate later cannot reach slug or issuer through here. A map, because
+// Updates with a struct would skip a false password_grant.
 func (r realmRepository) Update(ctx context.Context, aggregate *realm.Realm) error {
 	result := r.db.WithContext(ctx).
 		Model(&realmRecord{}).
 		Where(whereID, aggregate.ID().String()).
 		Updates(map[string]any{
-			"display_name": aggregate.DisplayName(),
-			"status":       aggregate.Status().String(),
-			"updated_at":   Timestamp(aggregate.UpdatedAt()),
+			"display_name":   aggregate.DisplayName(),
+			"status":         aggregate.Status().String(),
+			"password_grant": aggregate.Settings().PasswordGrant,
+			"updated_at":     Timestamp(aggregate.UpdatedAt()),
 		})
 
 	return applied(result, realm.ErrNotFound)

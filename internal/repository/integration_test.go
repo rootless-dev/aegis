@@ -4,8 +4,9 @@
 // what a real server can show; realm_test.go covers the rest against SQLite.
 //
 // makeRealm comes from realm_test.go, seedRealm and makeKey from key_test.go,
-// and the identity and credential helpers from identity_test.go and
-// credential_test.go; none of those files carries a build constraint.
+// and the identity, credential, session and refresh token helpers from
+// identity_test.go, credential_test.go, session_test.go and
+// refresh_token_test.go; none of those files carries a build constraint.
 package repository_test
 
 import (
@@ -380,6 +381,27 @@ func TestTimestampRoundTripsAtMicrosecondPrecisionInUTC(t *testing.T) {
 	if got.CreatedAt().Location() != time.UTC {
 		t.Errorf("expected the timestamp to come back in UTC, got location %s", got.CreatedAt().Location())
 	}
+}
+
+// password_grant is boolean on Postgres and an integer elsewhere, and the three
+// TTLs are the first integer columns a record maps. The bodies live in
+// realm_test.go.
+func TestIntegrationRealmSettingsRoundTrip(t *testing.T) {
+	db, store := openEngine(t)
+
+	assertSettingsRoundTrip(t, db.Gorm, store)
+}
+
+func TestIntegrationUpdateWritesThePasswordGrantAndNotTheTTLsOrTheIssuer(t *testing.T) {
+	db, store := openEngine(t)
+
+	assertUpdateWritesThePasswordGrantAndNothingElseNew(t, db.Gorm, store)
+}
+
+func TestIntegrationARealmRowWithoutTheSettingsReadsBackWithTheDefaults(t *testing.T) {
+	db, store := openEngine(t)
+
+	assertARowWithoutTheSettingsReadsBackWithTheDefaults(t, db.Gorm, store)
 }
 
 func TestInTxRollsBackBothWritesOnFailure(t *testing.T) {
@@ -846,6 +868,69 @@ func TestIntegrationScopesIdentitiesAndCredentialsToTheRealm(t *testing.T) {
 
 	if got.Hash() != firstHash {
 		t.Error("the credential in its own realm must be untouched")
+	}
+}
+
+// One engine for all of them: each assertion seeds realms of its own.
+func TestIntegrationSessionsAndRefreshTokens(t *testing.T) {
+	db, store := openEngine(t)
+
+	t.Run("a session round trips its nullable columns", func(t *testing.T) {
+		assertSessionRoundTrips(t, db.Gorm, store)
+	})
+
+	t.Run("a refresh token round trips its nullable columns", func(t *testing.T) {
+		assertRefreshTokenRoundTrips(t, db.Gorm, store)
+	})
+
+	t.Run("ending all counts only the live sessions of the scope", func(t *testing.T) {
+		assertEndAllCounts(t, store)
+	})
+
+	t.Run("a duplicate hash is refused", func(t *testing.T) {
+		assertDuplicateHashIsRefused(t, store)
+	})
+
+	t.Run("a concurrent consume has exactly one winner", func(t *testing.T) {
+		assertConcurrentConsumeHasOneWinner(t, store)
+	})
+
+	t.Run("a session takes its refresh tokens along", func(t *testing.T) {
+		assertASessionTakesItsRefreshTokensAlong(t, db.Gorm, store)
+	})
+
+	t.Run("a child outlives its parent token", func(t *testing.T) {
+		assertAChildOutlivesItsParentToken(t, db.Gorm, store)
+	})
+}
+
+// The text translate keys off, straight from the driver: the index name on the
+// servers, the column on SQLite.
+func TestIntegrationADuplicateTokenHashNamesWhatTranslateReads(t *testing.T) {
+	db, store := openEngine(t)
+	realmID := seedRealm(t, store, "hash-text")
+	owner := seedSession(t, store, seedIdentity(t, store, realmID, "ada@example.com", ""))
+	first := seedRefreshToken(t, store, owner, uuid.Nil)
+
+	err := db.Gorm.Exec(
+		"INSERT INTO refresh_tokens (id, realm_id, session_id, token_hash, created_at, expires_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?)",
+		newID(t).String(), realmID.String(), owner.ID().String(), first.Hash(),
+		repository.Timestamp(first.CreatedAt()), repository.Timestamp(first.ExpiresAt()),
+	).Error
+	if err == nil {
+		t.Fatal("want the unique index to refuse it, got no error")
+	}
+
+	t.Logf("driver text: %v", err)
+
+	want := "uq_refresh_tokens_hash"
+	if selectedDriver() == database.DriverSQLite {
+		want = "UNIQUE constraint failed: refresh_tokens.token_hash"
+	}
+
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("want the driver to name %q, got %v", want, err)
 	}
 }
 
