@@ -30,6 +30,7 @@ type Realm struct {
 	displayName string
 	issuer      string
 	status      Status
+	settings    Settings
 	createdAt   time.Time
 	updatedAt   time.Time
 }
@@ -68,6 +69,7 @@ func New(slug, displayName string, publicBaseURL *url.URL) (*Realm, error) {
 		displayName: displayName,
 		issuer:      issuer,
 		status:      StatusActive,
+		settings:    DefaultSettings(),
 		createdAt:   now,
 		updatedAt:   now,
 	}, nil
@@ -80,6 +82,7 @@ func Rehydrate(
 	id uuid.UUID,
 	slug, displayName, issuer string,
 	status Status,
+	settings Settings,
 	createdAt, updatedAt time.Time,
 ) (*Realm, error) {
 	if id == uuid.Nil {
@@ -102,12 +105,17 @@ func Rehydrate(
 		return nil, err
 	}
 
+	if err := settings.Validate(); err != nil {
+		return nil, err
+	}
+
 	return &Realm{
 		id:          id,
 		slug:        slug,
 		displayName: displayName,
 		issuer:      issuer,
 		status:      status,
+		settings:    settings,
 		createdAt:   createdAt.UTC(),
 		updatedAt:   updatedAt.UTC(),
 	}, nil
@@ -118,6 +126,7 @@ func (r *Realm) Slug() string         { return r.slug }
 func (r *Realm) DisplayName() string  { return r.displayName }
 func (r *Realm) Issuer() string       { return r.issuer }
 func (r *Realm) Status() Status       { return r.status }
+func (r *Realm) Settings() Settings   { return r.settings }
 func (r *Realm) CreatedAt() time.Time { return r.createdAt }
 func (r *Realm) UpdatedAt() time.Time { return r.updatedAt }
 
@@ -146,8 +155,13 @@ func (r *Realm) SetStatus(status Status) error {
 	return nil
 }
 
-// No setter for id, slug, issuer or createdAt. Rewriting an issuer is a
-// repository operation, not part of a realm's own behaviour.
+func (r *Realm) SetPasswordGrant(enabled bool) {
+	r.settings.PasswordGrant = enabled
+	r.touch()
+}
+
+// No setter for id, slug, issuer, createdAt or the TTLs. Rewriting an issuer is
+// a repository operation, not part of a realm's own behaviour.
 
 func (r *Realm) touch() {
 	r.updatedAt = time.Now().UTC().Truncate(time.Microsecond)
