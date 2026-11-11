@@ -200,22 +200,28 @@ func lookupPassword() (string, bool, error) {
 	return password, supplied, nil
 }
 
-// withIdentities owns what every verb repeats: the services, the realm lookup
-// and the exit code. apply returns an error already worded for an operator.
-func withIdentities(
-	cfg *configs.Application, slug string,
-	apply func(context.Context, uuid.UUID, *service.IdentityService, *service.CredentialService) error,
-) int {
+// realmScope is what a verb acting inside one realm works with.
+type realmScope struct {
+	realm       *realm.Realm
+	identities  *service.IdentityService
+	credentials *service.CredentialService
+	sessions    *service.SessionService
+}
+
+// withRealm owns what every verb repeats: the services, the realm lookup and
+// the exit code. apply returns an error already worded for an operator.
+func withRealm(cfg *configs.Application, slug string, apply func(context.Context, realmScope) error) int {
 	// The realm service cannot be built without the key service, hence the
 	// sealer. It costs nothing: no configuration validates without a master key.
-	realms, _, db, err := keyServices(cfg)
+	realms, keys, db, err := keyServices(cfg)
 	if err != nil {
 		return fail(err)
 	}
 
 	defer func() { _ = db.Shutdown(context.Background()) }()
 
-	identities, credentials := application.NewIdentityServices(repository.NewStore(db.Gorm))
+	store := repository.NewStore(db.Gorm)
+	identities, credentials := application.NewIdentityServices(store)
 
 	ctx := context.Background()
 
@@ -224,11 +230,27 @@ func withIdentities(
 		return fail(identityError(slug, "", err))
 	}
 
-	if err := apply(ctx, found.ID(), identities, credentials); err != nil {
+	scope := realmScope{
+		realm:       found,
+		identities:  identities,
+		credentials: credentials,
+		sessions:    service.NewSessionService(store, credentials, keys),
+	}
+
+	if err := apply(ctx, scope); err != nil {
 		return fail(err)
 	}
 
 	return 0
+}
+
+func withIdentities(
+	cfg *configs.Application, slug string,
+	apply func(context.Context, uuid.UUID, *service.IdentityService, *service.CredentialService) error,
+) int {
+	return withRealm(cfg, slug, func(ctx context.Context, in realmScope) error {
+		return apply(ctx, in.realm.ID(), in.identities, in.credentials)
+	})
 }
 
 func runIdentityCreate(

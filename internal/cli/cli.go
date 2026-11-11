@@ -38,6 +38,10 @@ func Dispatch(args []string) (handled bool, remaining []string, run Runner, usag
 		remaining, run, usageErr := dispatchIdentity(args[1:])
 
 		return true, remaining, run, usageErr
+	case "session":
+		remaining, run, usageErr := dispatchSession(args[1:])
+
+		return true, remaining, run, usageErr
 	default:
 		return true, nil, nil, fmt.Errorf("aegisd: unknown command %q\n\n%s", args[0], usage)
 	}
@@ -60,6 +64,10 @@ const usage = `Usage:
   aegisd identity list <realm> [flags]                                      list a realm's identities
   aegisd identity disable <realm> <login> [flags]                           refuse authentication for the identity
   aegisd identity enable <realm> <login> [flags]                            allow it again
+
+  aegisd session list <realm> <login> [flags]          list an identity's sessions, newest first
+  aegisd session revoke <realm> <session-id> [flags]   end one session
+  aegisd session revoke-all <realm> <login> [flags]    end every live session of an identity
 
 A login is an email or a username. A password is never an argument: it is read
 from AEGIS_IDENTITY_PASSWORD, or from the file AEGIS_IDENTITY_PASSWORD_FILE names.
