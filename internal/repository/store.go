@@ -39,6 +39,10 @@ func (s store) RefreshTokens() service.RefreshTokenRepository {
 	return refreshTokenRepository{db: s.db}
 }
 
+func (s store) AdminGrants() service.AdminGrantRepository {
+	return adminGrantRepository{db: s.db}
+}
+
 // Nesting reuses the outer transaction rather than opening a savepoint, which
 // is what DisableNestedTransaction in database.Open buys: the outermost InTx is
 // the only rollback boundary. SkipDefaultTransaction there makes this the only

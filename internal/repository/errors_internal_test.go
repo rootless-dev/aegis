@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/rootless-dev/aegis/internal/domain/admin"
 	"github.com/rootless-dev/aegis/internal/domain/credential"
 	"github.com/rootless-dev/aegis/internal/domain/identity"
 	"github.com/rootless-dev/aegis/internal/domain/key"
@@ -71,6 +72,20 @@ func TestTranslateOnlyReadsAUniqueViolationAsATakenValue(t *testing.T) {
 		},
 		"a not null violation on the token hash": {"NOT NULL constraint failed: refresh_tokens.token_hash", nil},
 		"a unique violation on the token id":     {"UNIQUE constraint failed: refresh_tokens.id", nil},
+
+		"a unique violation on the global marker": {
+			"UNIQUE constraint failed: admin_grants.identity_id, admin_grants.global_marker",
+			admin.ErrExists,
+		},
+		"a unique violation on the target realm": {
+			"UNIQUE constraint failed: admin_grants.identity_id, admin_grants.target_realm_id",
+			admin.ErrExists,
+		},
+		"a unique violation on the grant id":   {"UNIQUE constraint failed: admin_grants.id", nil},
+		"a check violation on the grant scope": {"CHECK constraint failed: ck_admin_grants_scope", nil},
+		"a not null violation on the grant identity": {
+			"NOT NULL constraint failed: admin_grants.identity_id", nil,
+		},
 	}
 
 	for name, tc := range tests {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/rootless-dev/aegis/internal/domain/admin"
 	"github.com/rootless-dev/aegis/internal/domain/credential"
 	"github.com/rootless-dev/aegis/internal/domain/identity"
 	"github.com/rootless-dev/aegis/internal/domain/key"
@@ -53,6 +54,9 @@ func translate(err error, notFound error) error {
 			return credential.ErrExists
 		case strings.Contains(message, "refresh_tokens.token_hash"):
 			return session.ErrHashInvalid
+		case strings.Contains(message, "admin_grants.global_marker"),
+			strings.Contains(message, "admin_grants.target_realm_id"):
+			return admin.ErrExists
 		}
 	}
 
@@ -71,6 +75,8 @@ var uniqueConstraints = []struct {
 	{"uq_identities_username", identity.ErrUsernameTaken},
 	{"uq_credentials_type", credential.ErrExists},
 	{"uq_refresh_tokens_hash", session.ErrHashInvalid},
+	{"uq_admin_grants_global", admin.ErrExists},
+	{"uq_admin_grants_target", admin.ErrExists},
 }
 
 // The last name in the message wins: MySQL and MariaDB quote the duplicate

@@ -949,3 +949,42 @@ func TestIntegrationRefusesAnActiveRowWithoutAMarker(t *testing.T) {
 		t.Fatal("want the check constraint to refuse it, got no error")
 	}
 }
+
+// One engine for all of them: each assertion seeds realms of its own.
+func TestIntegrationAdminGrants(t *testing.T) {
+	db, store := openEngine(t)
+
+	t.Run("both kinds round trip the target and the marker", func(t *testing.T) {
+		assertAdminGrantRoundTrips(t, db.Gorm, store)
+	})
+
+	t.Run("a duplicate of either kind is refused", func(t *testing.T) {
+		assertDuplicateGrantsAreRefused(t, store)
+	})
+
+	t.Run("a duplicate names what translate reads", func(t *testing.T) {
+		global, targeted := duplicateGrantTexts(t, db.Gorm, store)
+
+		wantGlobal, wantTargeted := "uq_admin_grants_global", "uq_admin_grants_target"
+		if selectedDriver() == database.DriverSQLite {
+			wantGlobal = "UNIQUE constraint failed: admin_grants.identity_id, admin_grants.global_marker"
+			wantTargeted = "UNIQUE constraint failed: admin_grants.identity_id, admin_grants.target_realm_id"
+		}
+
+		if !strings.Contains(global, wantGlobal) {
+			t.Errorf("global: want the driver to name %q, got %s", wantGlobal, global)
+		}
+
+		if !strings.Contains(targeted, wantTargeted) {
+			t.Errorf("target: want the driver to name %q, got %s", wantTargeted, targeted)
+		}
+	})
+
+	t.Run("a global administrator needs the grant, the password and an active identity", func(t *testing.T) {
+		assertHasGlobalAdministratorTruthTable(t, store)
+	})
+
+	t.Run("a target realm takes the grants over it along", func(t *testing.T) {
+		assertATargetRealmTakesItsGrantsAlong(t, db.Gorm, store)
+	})
+}
