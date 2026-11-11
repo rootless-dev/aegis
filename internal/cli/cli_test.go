@@ -175,6 +175,29 @@ func TestDispatchKeyDisableNeedsAKID(t *testing.T) {
 	}
 }
 
+// A thumbprint is base64url: one kid in 64 starts with a dash.
+func TestDispatchKeyTransitionTakesAKIDThatStartsWithADash(t *testing.T) {
+	const kid = "-Zk3sQ0nY5h1uJ8wB2xT7cR4vL9pM6aD0eF1gH2iJ3k"
+
+	for _, verb := range []string{"disable", "enable"} {
+		handled, remaining, run, err := cli.Dispatch([]string{"key", verb, "acme", kid, "--log-level=debug"})
+		if err != nil || !handled || run == nil {
+			t.Fatalf("%s: want a runner, got handled=%v err=%v", verb, handled, err)
+		}
+
+		if len(remaining) != 1 || remaining[0] != "--log-level=debug" {
+			t.Errorf("%s: want only the flag left, got %v", verb, remaining)
+		}
+	}
+}
+
+func TestDispatchKeyDisableStillTakesAFlagForAMissingKID(t *testing.T) {
+	_, _, _, err := cli.Dispatch([]string{"key", "disable", "acme", "--log-level=debug"})
+	if err == nil {
+		t.Fatal("want a usage error, got none")
+	}
+}
+
 func TestDispatchKeyRewrapTakesNoArguments(t *testing.T) {
 	_, _, _, err := cli.Dispatch([]string{"key", "rewrap", "acme"})
 	if err == nil {
