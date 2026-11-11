@@ -23,6 +23,7 @@ import (
 	"github.com/rootless-dev/aegis/internal/infra/health"
 	"github.com/rootless-dev/aegis/internal/infra/keygen"
 	"github.com/rootless-dev/aegis/internal/infra/logging"
+	"github.com/rootless-dev/aegis/internal/infra/passhash"
 	"github.com/rootless-dev/aegis/internal/infra/sealer"
 	"github.com/rootless-dev/aegis/internal/migrations"
 	"github.com/rootless-dev/aegis/internal/repository"
@@ -207,6 +208,14 @@ func (app *Application) setCrypto() error {
 	return nil
 }
 
+// NewIdentityServices is exported for the reason NewSealer is: `aegisd identity`
+// must hash with the parameters the server verifies against.
+func NewIdentityServices(store service.Store) (*service.IdentityService, *service.CredentialService) {
+	credentials := service.NewCredentialService(store, passhash.New())
+
+	return service.NewIdentityService(store, credentials), credentials
+}
+
 // setServices builds what the use cases need and seeds the master realm. The
 // service is held on the Application rather than built as a local, so the admin
 // API does not later construct a second one.
@@ -220,6 +229,7 @@ func (app *Application) setServices() error {
 
 	app.keys = service.NewKeyService(store, app.sealer, keygen.New())
 	app.realms = service.NewRealmService(store, publicURL, app.keys)
+	app.identities, app.credentials = NewIdentityServices(store)
 
 	// Bounded, or a FindBySlug waiting on a row lock hangs the boot. It borrows
 	// connect_timeout: the seed is a few single-row round trips on an open

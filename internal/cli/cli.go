@@ -34,6 +34,10 @@ func Dispatch(args []string) (handled bool, remaining []string, run Runner, usag
 		remaining, run, usageErr := dispatchKey(args[1:])
 
 		return true, remaining, run, usageErr
+	case "identity":
+		remaining, run, usageErr := dispatchIdentity(args[1:])
+
+		return true, remaining, run, usageErr
 	default:
 		return true, nil, nil, fmt.Errorf("aegisd: unknown command %q\n\n%s", args[0], usage)
 	}
@@ -50,6 +54,17 @@ const usage = `Usage:
   aegisd key disable <realm> <kid> [flags]   take a passive key out of the JWKS
   aegisd key enable <realm> <kid> [flags]    put a disabled key back as passive
   aegisd key rewrap [flags]                  reseal every key under the current master key
+
+  aegisd identity create <realm> <email> [username] [--temporary] [flags]   create an identity
+  aegisd identity set-password <realm> <login> [--temporary] [flags]        set or replace the password
+  aegisd identity list <realm> [flags]                                      list a realm's identities
+  aegisd identity disable <realm> <login> [flags]                           refuse authentication for the identity
+  aegisd identity enable <realm> <login> [flags]                            allow it again
+
+A login is an email or a username. A password is never an argument: it is read
+from AEGIS_IDENTITY_PASSWORD, or from the file AEGIS_IDENTITY_PASSWORD_FILE names.
+Without one, create leaves the identity with no password. --temporary makes the
+password one that has to be changed at the next login.
 
 The subcommand must come first; flags follow it.
 `

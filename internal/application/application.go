@@ -35,6 +35,9 @@ type Application struct {
 	keys   *service.KeyService
 	sealer *sealer.Sealer
 
+	identities  *service.IdentityService
+	credentials *service.CredentialService
+
 	oidc *oidc.Handler
 
 	// router is what the server serves; surfaces is the group carrying the full
