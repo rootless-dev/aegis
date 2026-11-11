@@ -216,7 +216,8 @@ func NewIdentityServices(store service.Store) (*service.IdentityService, *servic
 	return service.NewIdentityService(store, credentials), credentials
 }
 
-// setServices builds what the use cases need and seeds the master realm. The
+// setServices builds what the use cases need, seeds the master realm and then
+// its first administrator. The
 // service is held on the Application rather than built as a local, so the admin
 // API does not later construct a second one.
 func (app *Application) setServices() error {
@@ -231,6 +232,7 @@ func (app *Application) setServices() error {
 	app.realms = service.NewRealmService(store, publicURL, app.keys)
 	app.identities, app.credentials = NewIdentityServices(store)
 	app.sessions = service.NewSessionService(store, app.credentials, app.keys)
+	app.admins = service.NewAdminService(store, app.identities, app.credentials)
 
 	// Bounded, or a FindBySlug waiting on a row lock hangs the boot. It borrows
 	// connect_timeout: the seed is a few single-row round trips on an open
@@ -268,7 +270,7 @@ func (app *Application) setServices() error {
 
 	event.Msg("master realm ready")
 
-	return nil
+	return app.ensureAdministrator()
 }
 
 // setCertificates only produces a keeper when this process is the one
