@@ -98,12 +98,50 @@ type fakeStore struct {
 
 	// Concrete rather than the interface: the tests read rows straight off it.
 	keys *fakeKeys
+
+	// Nil in the suites that never reach them, the probe included.
+	identities  *fakeIdentities
+	credentials *fakeCredentials
+	tx          *txProbe
 }
 
-func (s fakeStore) Realms() service.RealmRepository  { return s.repo }
-func (s fakeStore) Keys() service.RealmKeyRepository { return s.keys }
+func (s fakeStore) Realms() service.RealmRepository           { return s.repo }
+func (s fakeStore) Keys() service.RealmKeyRepository          { return s.keys }
+func (s fakeStore) Identities() service.IdentityRepository    { return s.identities }
+func (s fakeStore) Credentials() service.CredentialRepository { return s.credentials }
 
-func (s fakeStore) InTx(ctx context.Context, fn func(service.Store) error) error { return fn(s) }
+// Rolls back identities and credentials only: realms and keys hand out the
+// pointers they store, so there is no earlier state left to return to.
+func (s fakeStore) InTx(ctx context.Context, fn func(service.Store) error) error {
+	s.tx.enter()
+	defer s.tx.leave()
+
+	rollbackIdentities := s.identities.snapshot()
+	rollbackCredentials := s.credentials.snapshot()
+
+	err := fn(s)
+	if err != nil {
+		rollbackIdentities()
+		rollbackCredentials()
+	}
+
+	return err
+}
+
+// txProbe lets a fake outside the store ask whether a transaction is open.
+type txProbe struct{ open bool }
+
+func (p *txProbe) enter() {
+	if p != nil {
+		p.open = true
+	}
+}
+
+func (p *txProbe) leave() {
+	if p != nil {
+		p.open = false
+	}
+}
 
 func realmServiceWith(t *testing.T, store *fakeStore, base *url.URL) *service.RealmService {
 	t.Helper()

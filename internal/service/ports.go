@@ -38,6 +38,15 @@ type SignerSource interface {
 	SignerFor(ctx context.Context, realmID uuid.UUID, algorithm key.Algorithm) (crypto.Signer, key.Ref, error)
 }
 
+// PasswordHasher turns a password into the encoded string a credential stores.
+type PasswordHasher interface {
+	Hash(password string) (string, error)
+
+	// A wrong password is ok=false with a nil error; an error means the stored
+	// value could not be evaluated. needsRehash is only meaningful when ok.
+	Verify(password, encoded string) (ok, needsRehash bool, err error)
+}
+
 // Store is the transactional boundary. The repositories handed to the callback
 // are bound to one transaction; the ones on Store itself are not.
 //
@@ -46,5 +55,7 @@ type SignerSource interface {
 type Store interface {
 	Realms() RealmRepository
 	Keys() RealmKeyRepository
+	Identities() IdentityRepository
+	Credentials() CredentialRepository
 	InTx(ctx context.Context, fn func(Store) error) error
 }

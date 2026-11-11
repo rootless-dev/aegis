@@ -15,8 +15,8 @@ const (
 	masterSlug        = "master"
 	masterDisplayName = "Master"
 
-	defaultRealmPageSize = 50
-	maxRealmPageSize     = 500
+	defaultPageSize = 50
+	maxPageSize     = 500
 )
 
 // ErrLimitNotPositive reports a page size no repository will guess at. It lives
@@ -142,11 +142,11 @@ func (s *RealmService) Resolve(ctx context.Context, slug string) (*realm.Realm, 
 // Clamps rather than rejects: a page size is not worth failing a call over.
 func (s *RealmService) List(ctx context.Context, q RealmQuery) ([]*realm.Realm, error) {
 	if q.Limit <= 0 {
-		q.Limit = defaultRealmPageSize
+		q.Limit = defaultPageSize
 	}
 
-	if q.Limit > maxRealmPageSize {
-		q.Limit = maxRealmPageSize
+	if q.Limit > maxPageSize {
+		q.Limit = maxPageSize
 	}
 
 	if len(q.Status) == 0 {
