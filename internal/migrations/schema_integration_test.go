@@ -1,17 +1,21 @@
 //go:build integration
 
-// The identities and credentials tables against a real server, selected by
-// AEGIS_TEST_DRIVER. Everything here is raw SQL: these are the rules the schema
+// The schema against a real server, selected by AEGIS_TEST_DRIVER. Everything here is raw SQL: these are the rules the schema
 // holds on its own, whatever the domain and the repository above it refuse
 // first.
 package migrations_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/google/uuid"
@@ -156,6 +160,15 @@ func endpoint(t *testing.T, container testcontainers.Container, port string) (st
 func openEngine(t *testing.T) *database.DB {
 	t.Helper()
 
+	db := openEmptyEngine(t)
+	migrateThrough(t, db, latestVersion)
+
+	return db
+}
+
+func openEmptyEngine(t *testing.T) *database.DB {
+	t.Helper()
+
 	db, err := database.Open(engineOptions(t))
 	if err != nil {
 		t.Fatalf("opening the database: %v", err)
@@ -163,18 +176,51 @@ func openEngine(t *testing.T) *database.DB {
 
 	t.Cleanup(func() { _ = db.Shutdown(context.Background()) })
 
+	return db
+}
+
+// migrateThrough stops at a version by handing the runner a copy of the real
+// tree cut there, which is how a case gets rows in before a later migration.
+func migrateThrough(t *testing.T, db *database.DB, version uint64) {
+	t.Helper()
+
 	tree, err := migrations.For(selectedDriver().String())
 	if err != nil {
 		t.Fatalf("migrations: %v", err)
 	}
 
-	options := database.MigrateOptions{Timeout: time.Minute, LockTimeout: 30 * time.Second}
-
-	if err := db.Migrate(context.Background(), tree, options); err != nil {
-		t.Fatalf("migrating: %v", err)
+	entries, err := fs.ReadDir(tree, ".")
+	if err != nil {
+		t.Fatalf("reading the migrations: %v", err)
 	}
 
-	return db
+	cut := fstest.MapFS{}
+
+	for _, entry := range entries {
+		prefix, _, _ := strings.Cut(entry.Name(), "_")
+
+		number, err := strconv.ParseUint(prefix, 10, 64)
+		if err != nil {
+			t.Fatalf("%s does not start with a version: %v", entry.Name(), err)
+		}
+
+		if number > version {
+			continue
+		}
+
+		body, err := fs.ReadFile(tree, entry.Name())
+		if err != nil {
+			t.Fatalf("reading %s: %v", entry.Name(), err)
+		}
+
+		cut[entry.Name()] = &fstest.MapFile{Data: body}
+	}
+
+	options := database.MigrateOptions{Timeout: time.Minute, LockTimeout: 30 * time.Second}
+
+	if err := db.Migrate(context.Background(), cut, options); err != nil {
+		t.Fatalf("migrating through %d: %v", version, err)
+	}
 }
 
 func now() time.Time {
@@ -228,6 +274,86 @@ func insertCredential(db *database.DB, realmID, identityID, kind string, mustCha
 			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		uuid.NewString(), realmID, identityID, kind, "$argon2id$placeholder", mustChange, nil, now(), now(),
 	).Error
+}
+
+// endedAt and endReason are any so a case can pass nil for NULL.
+func insertSession(db *database.DB, id, realmID, identityID string, endedAt, endReason any) error {
+	return db.Gorm.Exec(
+		"INSERT INTO sessions (id, realm_id, identity_id, ip, user_agent, created_at, last_seen_at, expires_at, ended_at, end_reason)"+
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, realmID, identityID, "2001:db8::1", "schema-test", now(), now(), now().Add(time.Hour), endedAt, endReason,
+	).Error
+}
+
+func seedSession(t *testing.T, db *database.DB, realmID, identityID string) string {
+	t.Helper()
+
+	id := uuid.NewString()
+
+	if err := insertSession(db, id, realmID, identityID, nil, nil); err != nil {
+		t.Fatalf("seeding the session: %v", err)
+	}
+
+	return id
+}
+
+func tokenHash() string {
+	sum := sha256.Sum256([]byte(uuid.NewString()))
+
+	return hex.EncodeToString(sum[:])
+}
+
+// parentID is any so a case can pass nil for NULL.
+func insertRefreshToken(db *database.DB, id, realmID, sessionID string, parentID any, hash string) error {
+	return db.Gorm.Exec(
+		"INSERT INTO refresh_tokens (id, realm_id, session_id, parent_id, token_hash, created_at, expires_at, used_at)"+
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		id, realmID, sessionID, parentID, hash, now(), now().Add(time.Hour), nil,
+	).Error
+}
+
+// seedTokenChain writes three tokens, each the child of the one before, and
+// returns their ids oldest first.
+func seedTokenChain(t *testing.T, db *database.DB, realmID, sessionID string) []string {
+	t.Helper()
+
+	ids := make([]string, 0, 3)
+
+	var parentID any
+
+	for range 3 {
+		id := uuid.NewString()
+
+		if err := insertRefreshToken(db, id, realmID, sessionID, parentID, tokenHash()); err != nil {
+			t.Fatalf("seeding the token chain: %v", err)
+		}
+
+		ids = append(ids, id)
+		parentID = id
+	}
+
+	return ids
+}
+
+// SQLite keeps no catalogue of constraints, only the text that declared them.
+func hasCheckConstraint(t *testing.T, db *database.DB, table, name string) bool {
+	t.Helper()
+
+	switch selectedDriver() {
+	case database.DriverPostgres:
+		return countRows(t, db,
+			"SELECT COUNT(*) FROM pg_constraint WHERE contype = 'c' AND conrelid = to_regclass(?) AND conname = ?",
+			table, name) == 1
+	case database.DriverSQLite:
+		return countRows(t, db,
+			"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ? AND instr(sql, ?) > 0",
+			table, "CONSTRAINT "+name+" CHECK") == 1
+	default:
+		return countRows(t, db,
+			"SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS"+
+				" WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = ? AND CONSTRAINT_TYPE = 'CHECK'",
+			table, name) == 1
+	}
 }
 
 func countRows(t *testing.T, db *database.DB, query string, args ...any) int64 {
@@ -416,6 +542,256 @@ func TestIdentitiesAndCredentialsHoldTheirRules(t *testing.T) {
 
 		if got := countRows(t, db, "SELECT COUNT(*) FROM credentials WHERE identity_id = ?", keptIdentityID); got != 1 {
 			t.Errorf("want the other identity to keep its credential, got %d", got)
+		}
+	})
+}
+
+const realmDefaults = "access_token_ttl = 300 AND session_idle_ttl = 1800 AND session_max_ttl = 36000"
+
+// Its own engine, because two realms have to exist before 0012 runs: the
+// defaults and 0016 only mean something against rows that were already there.
+func TestSessionsAndTokensHoldTheirRules(t *testing.T) {
+	db := openEmptyEngine(t)
+
+	migrateThrough(t, db, 11)
+
+	masterID := seedRealm(t, db, "master")
+	existingID := seedRealm(t, db, "existing")
+
+	migrateThrough(t, db, latestVersion)
+
+	t.Run("a realm older than the settings is back-filled with the defaults", func(t *testing.T) {
+		for _, id := range []string{masterID, existingID} {
+			got := countRows(t, db, "SELECT COUNT(*) FROM realms WHERE id = ? AND "+realmDefaults, id)
+			if got != 1 {
+				t.Errorf("want realm %s back-filled with 300, 1800 and 36000, but it was not", id)
+			}
+		}
+	})
+
+	t.Run("only the master realm is given the password grant", func(t *testing.T) {
+		createdAfterID := seedRealm(t, db, "created-after")
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM realms WHERE id = ? AND password_grant = ?", masterID, true); got != 1 {
+			t.Error("want the master realm to have password_grant true, but it does not")
+		}
+
+		for _, id := range []string{existingID, createdAfterID} {
+			got := countRows(t, db,
+				"SELECT COUNT(*) FROM realms WHERE id = ? AND password_grant = ? AND "+realmDefaults, id, false)
+			if got != 1 {
+				t.Errorf("want realm %s with the default TTLs and password_grant false, but it was not", id)
+			}
+		}
+	})
+
+	// A later migration can only drop what it can name, on every engine.
+	t.Run("the checks added with the columns carry their names", func(t *testing.T) {
+		names := []string{
+			"ck_realms_access_token_ttl",
+			"ck_realms_session_idle_ttl",
+			"ck_realms_session_max_ttl",
+		}
+
+		// Postgres has a real boolean, so 0015 adds no check there.
+		if selectedDriver() != database.DriverPostgres {
+			names = append(names, "ck_realms_password_grant")
+		}
+
+		for _, name := range names {
+			if !hasCheckConstraint(t, db, "realms", name) {
+				t.Errorf("want a check constraint named %s on realms, found none", name)
+			}
+		}
+	})
+
+	t.Run("a TTL is a positive number of seconds", func(t *testing.T) {
+		realmID := seedRealm(t, db, "ttl-check")
+
+		for _, column := range []string{"access_token_ttl", "session_idle_ttl", "session_max_ttl"} {
+			update := "UPDATE realms SET " + column + " = ? WHERE id = ?"
+
+			if err := db.Gorm.Exec(update, 1, realmID).Error; err != nil {
+				t.Fatalf("%s = 1 must be accepted: %v", column, err)
+			}
+
+			for _, value := range []int{0, -1} {
+				if err := db.Gorm.Exec(update, value, realmID).Error; err == nil {
+					t.Errorf("expected ck_realms_%s to refuse %d, but the update succeeded", column, value)
+				}
+			}
+		}
+	})
+
+	t.Run("password_grant holds nothing but a boolean", func(t *testing.T) {
+		realmID := seedRealm(t, db, "grant-check")
+		update := "UPDATE realms SET password_grant = ? WHERE id = ?"
+
+		for _, flag := range []bool{true, false} {
+			if err := db.Gorm.Exec(update, flag, realmID).Error; err != nil {
+				t.Fatalf("password_grant %v must be accepted: %v", flag, err)
+			}
+		}
+
+		if err := db.Gorm.Exec(update, 2, realmID).Error; err == nil {
+			t.Fatal("expected password_grant to refuse 2, but the update succeeded")
+		}
+	})
+
+	t.Run("an unknown end reason is refused", func(t *testing.T) {
+		realmID := seedRealm(t, db, "session-reason")
+		identityID := seedIdentity(t, db, realmID, "one@example.com")
+
+		for _, reason := range []string{"revoked", "reuse", "realm_disabled"} {
+			if err := insertSession(db, uuid.NewString(), realmID, identityID, now(), reason); err != nil {
+				t.Fatalf("end reason %q must be accepted: %v", reason, err)
+			}
+		}
+
+		if err := insertSession(db, uuid.NewString(), realmID, identityID, now(), "expired"); err == nil {
+			t.Fatal("expected ck_sessions_end_reason to refuse 'expired', but the insert succeeded")
+		}
+	})
+
+	t.Run("a session ends with a reason or not at all", func(t *testing.T) {
+		realmID := seedRealm(t, db, "session-ended")
+		identityID := seedIdentity(t, db, realmID, "one@example.com")
+
+		if err := insertSession(db, uuid.NewString(), realmID, identityID, nil, nil); err != nil {
+			t.Fatalf("a live session must be accepted: %v", err)
+		}
+
+		if err := insertSession(db, uuid.NewString(), realmID, identityID, now(), "revoked"); err != nil {
+			t.Fatalf("an ended session with its reason must be accepted: %v", err)
+		}
+
+		if err := insertSession(db, uuid.NewString(), realmID, identityID, now(), nil); err == nil {
+			t.Error("expected ck_sessions_ended to refuse ended_at without end_reason, but the insert succeeded")
+		}
+
+		if err := insertSession(db, uuid.NewString(), realmID, identityID, nil, "revoked"); err == nil {
+			t.Error("expected ck_sessions_ended to refuse end_reason without ended_at, but the insert succeeded")
+		}
+	})
+
+	t.Run("a refresh token hash is unique across realms", func(t *testing.T) {
+		first := seedRealm(t, db, "hash-first")
+		second := seedRealm(t, db, "hash-second")
+		firstSession := seedSession(t, db, first, seedIdentity(t, db, first, "one@example.com"))
+		secondSession := seedSession(t, db, second, seedIdentity(t, db, second, "one@example.com"))
+		hash := tokenHash()
+
+		if err := insertRefreshToken(db, uuid.NewString(), first, firstSession, nil, hash); err != nil {
+			t.Fatalf("seeding: %v", err)
+		}
+
+		if err := insertRefreshToken(db, uuid.NewString(), first, firstSession, nil, tokenHash()); err != nil {
+			t.Fatalf("a second token with its own hash must be accepted: %v", err)
+		}
+
+		if err := insertRefreshToken(db, uuid.NewString(), second, secondSession, nil, hash); err == nil {
+			t.Fatal("expected uq_refresh_tokens_hash to refuse a hash already stored, but the insert succeeded")
+		}
+	})
+
+	// The rows a cascade removes also point at each other through parent_id,
+	// hence a chain of three in every delete below.
+	t.Run("deleting a realm removes its sessions and refresh tokens", func(t *testing.T) {
+		realmID := seedRealm(t, db, "cascade-session-realm")
+		keptRealmID := seedRealm(t, db, "cascade-session-realm-kept")
+
+		for _, id := range []string{realmID, keptRealmID} {
+			seedTokenChain(t, db, id, seedSession(t, db, id, seedIdentity(t, db, id, "one@example.com")))
+		}
+
+		if err := db.Gorm.Exec("DELETE FROM realms WHERE id = ?", realmID).Error; err != nil {
+			t.Fatalf("deleting the realm: %v", err)
+		}
+
+		for table, kept := range map[string]int64{"sessions": 1, "refresh_tokens": 3} {
+			if got := countRows(t, db, "SELECT COUNT(*) FROM "+table+" WHERE realm_id = ?", realmID); got != 0 {
+				t.Errorf("want the %s gone with the realm, got %d", table, got)
+			}
+
+			if got := countRows(t, db, "SELECT COUNT(*) FROM "+table+" WHERE realm_id = ?", keptRealmID); got != kept {
+				t.Errorf("want the other realm to keep its %d rows in %s, got %d", kept, table, got)
+			}
+		}
+	})
+
+	t.Run("deleting an identity removes its sessions and refresh tokens", func(t *testing.T) {
+		realmID := seedRealm(t, db, "cascade-session-identity")
+		identityID := seedIdentity(t, db, realmID, "one@example.com")
+		keptIdentityID := seedIdentity(t, db, realmID, "two@example.com")
+		sessionID := seedSession(t, db, realmID, identityID)
+		keptSessionID := seedSession(t, db, realmID, keptIdentityID)
+
+		seedTokenChain(t, db, realmID, sessionID)
+		seedTokenChain(t, db, realmID, keptSessionID)
+
+		if err := db.Gorm.Exec("DELETE FROM identities WHERE id = ?", identityID).Error; err != nil {
+			t.Fatalf("deleting the identity: %v", err)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM sessions WHERE identity_id = ?", identityID); got != 0 {
+			t.Errorf("want the sessions gone with the identity, got %d", got)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM refresh_tokens WHERE session_id = ?", sessionID); got != 0 {
+			t.Errorf("want the refresh tokens gone with the identity, got %d", got)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM refresh_tokens WHERE session_id = ?", keptSessionID); got != 3 {
+			t.Errorf("want the other identity to keep its 3 refresh tokens, got %d", got)
+		}
+	})
+
+	t.Run("deleting a session removes its refresh tokens", func(t *testing.T) {
+		realmID := seedRealm(t, db, "cascade-session")
+		identityID := seedIdentity(t, db, realmID, "one@example.com")
+		sessionID := seedSession(t, db, realmID, identityID)
+		keptSessionID := seedSession(t, db, realmID, identityID)
+
+		seedTokenChain(t, db, realmID, sessionID)
+		seedTokenChain(t, db, realmID, keptSessionID)
+
+		if err := db.Gorm.Exec("DELETE FROM sessions WHERE id = ?", sessionID).Error; err != nil {
+			t.Fatalf("deleting the session: %v", err)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM refresh_tokens WHERE session_id = ?", sessionID); got != 0 {
+			t.Errorf("want the refresh tokens gone with the session, got %d", got)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM refresh_tokens WHERE session_id = ?", keptSessionID); got != 3 {
+			t.Errorf("want the other session to keep its 3 refresh tokens, got %d", got)
+		}
+	})
+
+	t.Run("deleting a parent token leaves its child without a parent", func(t *testing.T) {
+		realmID := seedRealm(t, db, "token-parent")
+		sessionID := seedSession(t, db, realmID, seedIdentity(t, db, realmID, "one@example.com"))
+		chain := seedTokenChain(t, db, realmID, sessionID)
+
+		if err := db.Gorm.Exec("DELETE FROM refresh_tokens WHERE id = ?", chain[0]).Error; err != nil {
+			t.Fatalf("deleting the parent token: %v", err)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM refresh_tokens WHERE id = ? AND parent_id IS NULL", chain[1]); got != 1 {
+			t.Errorf("want the child kept with parent_id NULL, got %d such rows", got)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM refresh_tokens WHERE id = ? AND parent_id = ?", chain[2], chain[1]); got != 1 {
+			t.Errorf("want the grandchild still pointing at its own parent, got %d such rows", got)
+		}
+	})
+
+	t.Run("a refresh token needs a parent that exists", func(t *testing.T) {
+		realmID := seedRealm(t, db, "token-orphan")
+		sessionID := seedSession(t, db, realmID, seedIdentity(t, db, realmID, "one@example.com"))
+
+		if err := insertRefreshToken(db, uuid.NewString(), realmID, sessionID, uuid.NewString(), tokenHash()); err == nil {
+			t.Fatal("expected fk_refresh_tokens_parent to refuse an unknown parent, but the insert succeeded")
 		}
 	})
 }
