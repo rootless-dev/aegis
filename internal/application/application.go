@@ -37,6 +37,7 @@ type Application struct {
 
 	identities  *service.IdentityService
 	credentials *service.CredentialService
+	sessions    *service.SessionService
 
 	oidc *oidc.Handler
 

@@ -4,12 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/rootless-dev/aegis/internal/domain/key"
-	"github.com/rootless-dev/aegis/internal/domain/realm"
 	"github.com/rootless-dev/aegis/internal/http/response"
 )
 
@@ -22,26 +20,12 @@ type jwkSet struct {
 }
 
 func (h *Handler) JWKS(w http.ResponseWriter, r *http.Request) {
-	slug := h.slug(r)
-
-	found, err := h.realms.Resolve(r.Context(), slug)
-	if err != nil {
-		// Archived answers 404 like unknown: which realms exist is not this
-		// endpoint's to disclose.
-		if errors.Is(err, realm.ErrNotFound) || errors.Is(err, realm.ErrNotAvailable) {
-			response.WriteError(w, http.StatusNotFound, response.Error{
-				Code:        response.ErrorInvalidRequest,
-				Description: "no realm named " + slug,
-			})
-
-			return
-		}
-
-		h.logger.Error().Err(err).Str("realm", slug).Msg("resolving a realm for the jwks")
-		response.WriteServerError(w)
-
+	found, ok := h.resolveRealm(w, r)
+	if !ok {
 		return
 	}
+
+	slug := found.Slug()
 
 	published, err := h.keys.Published(r.Context(), found.ID())
 	if err != nil {

@@ -69,6 +69,7 @@ func TestJWKSPublishesTheKeyThatSigns(t *testing.T) {
 	handler := oidc.New(
 		fakeResolver{status: realm.StatusActive},
 		fakeKeys{keys: []*key.Key{built}},
+		nil,
 		func(*http.Request) string { return "acme" },
 		testLogger(),
 	)
@@ -143,6 +144,7 @@ func TestJWKSRefusesAnArchivedRealm(t *testing.T) {
 	handler := oidc.New(
 		fakeResolver{err: realm.ErrNotAvailable},
 		fakeKeys{},
+		nil,
 		func(*http.Request) string { return "acme" },
 		testLogger(),
 	)
@@ -162,6 +164,7 @@ func TestJWKSRefusesAnUnknownRealm(t *testing.T) {
 	handler := oidc.New(
 		fakeResolver{err: realm.ErrNotFound},
 		fakeKeys{},
+		nil,
 		func(*http.Request) string { return "nope" },
 		testLogger(),
 	)
@@ -175,6 +178,7 @@ func TestJWKSServesAnEmptySetRatherThan404(t *testing.T) {
 	handler := oidc.New(
 		fakeResolver{status: realm.StatusActive},
 		fakeKeys{},
+		nil,
 		func(*http.Request) string { return "acme" },
 		testLogger(),
 	)
@@ -248,6 +252,7 @@ func newHandler(t *testing.T, status realm.Status) (*oidc.Handler, []*key.Key) {
 	return oidc.New(
 		fakeResolver{status: status},
 		fakeKeys{keys: keys},
+		nil,
 		func(*http.Request) string { return "acme" },
 		testLogger(),
 	), keys

@@ -230,6 +230,7 @@ func (app *Application) setServices() error {
 	app.keys = service.NewKeyService(store, app.sealer, keygen.New())
 	app.realms = service.NewRealmService(store, publicURL, app.keys)
 	app.identities, app.credentials = NewIdentityServices(store)
+	app.sessions = service.NewSessionService(store, app.credentials, app.keys)
 
 	// Bounded, or a FindBySlug waiting on a row lock hangs the boot. It borrows
 	// connect_timeout: the seed is a few single-row round trips on an open
@@ -339,6 +340,7 @@ func (app *Application) setWeb() error {
 	app.oidc = oidc.New(
 		app.realms,
 		app.keys,
+		app.sessions,
 		func(r *http.Request) string { return chi.URLParam(r, oidc.RealmParam) },
 		app.logger,
 	)
