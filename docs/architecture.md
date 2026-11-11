@@ -5,7 +5,7 @@
 ```
 cmd/aegisd                  entry point: signals and exit code, nothing else
 internal/application        assembly and lifecycle
-internal/cli                subcommand dispatch for `aegisd migrate`, `aegisd key`, `aegisd identity`, `aegisd session` and their verbs
+internal/cli                subcommand dispatch for `aegisd migrate`, `aegisd key`, `aegisd identity`, `aegisd session`, `aegisd admin` and their verbs, and for `aegisd bootstrap-admin`
 internal/configs            configuration structs, defaults and validation
 internal/domain/realm       the realm aggregate and its token and session settings; imports nothing internal
 internal/domain/key         the key aggregate; imports nothing internal
@@ -13,6 +13,7 @@ internal/domain/identity    the identity aggregate; imports nothing internal
 internal/domain/credential  the credential aggregate; imports nothing internal
 internal/domain/session     the session and the refresh tokens bound to it; imports nothing internal
 internal/domain/token       builds and verifies the access token, a JWT in a compact JWS; standard library only
+internal/domain/admin       the administrative grant, who may administer which realm; imports nothing internal
 internal/service            the use cases; declares the interfaces they consume
 internal/repository         implements the service interfaces over GORM
 internal/migrations         the embedded schema SQL, one directory per dialect
@@ -97,12 +98,13 @@ gathered in one file. A repository interface sits beside its service —
 `RealmRepository` and `RealmQuery` in `realm.go`, `RealmKeyRepository` in
 `key.go`, `IdentityRepository` and `IdentityQuery` in `identity.go`,
 `CredentialRepository` in `credential.go`, `SessionRepository` and
-`RefreshTokenRepository` in `session.go` — so one file shows both the use case
-and the contract it depends on. `ports.go` keeps only what crosses more than
-one use case: `Store`, and the ports reaching outside the process. The split
-was worth doing before it hurt: with two aggregates a single file was 111
-lines, and identity, credential, session and refresh token have each added a
-repository since.
+`RefreshTokenRepository` in `session.go`, `AdminGrantRepository` in `admin.go`
+— so one file shows both the use case and the contract it depends on.
+`ports.go` keeps only what crosses more than one use case: `Store`, and the
+ports reaching outside the process. The split was worth doing before it hurt:
+with two aggregates a single file was 111 lines, and identity, credential,
+session, refresh token and administrative grant have each added a repository
+since.
 
 `Store` stays accessors and `InTx`, nothing else. It is the one interface every
 fake in the test suite must implement in full, so a method that did work there
@@ -530,8 +532,10 @@ that answer is `SessionService`, described under
 `VerifyPassword` takes a realm id, and whether a disabled realm may
 authenticate is decided by its caller, `SessionService.Login`, before a
 password is looked at. No password policy, beyond refusing the empty string and
-the 1024 byte bound. Nothing seeded at boot, and no bootstrap of the first
-administrator: an installation has no identity until someone creates one.
+the 1024 byte bound. Nothing in these two packages seeds an identity either:
+the one identity a boot may create is the first administrator, and only when
+the installation was configured with one, as [Administrators](#administrators)
+describes.
 
 One limit was stated here before it was met, and it is met now. At 64 MiB per
 verification, concurrent logins multiply memory, and nothing bounds how many
@@ -542,9 +546,9 @@ this phase limits it.
 
 ### `aegisd identity`
 
-`aegisd identity` is how an identity exists at all for now: `create`,
-`set-password`, `list`, `disable` and `enable`, against a realm named by its
-slug, with no server running. It builds its services through the same
+`aegisd identity` is how every identity but the first administrator exists for
+now: `create`, `set-password`, `list`, `disable` and `enable`, against a realm
+named by its slug, with no server running. It builds its services through the same
 constructor the server uses, so a password set from the command line is hashed
 with the parameters the server will verify against.
 
@@ -565,9 +569,9 @@ ignored.
 Like every other invocation it needs the master key, though it seals nothing:
 configuration is validated whole before the dispatch picks what to run, and no
 configuration validates without one. It also needs the realm to exist, and the
-`master` realm is seeded by the server's boot and not by `aegisd migrate` — so
-against a database that has only been migrated, it reports that there is no
-such realm. An archived realm is refused; a disabled one is not, since
+`master` realm is seeded by the server's boot, or by `aegisd bootstrap-admin`,
+and not by `aegisd migrate` — so against a database that has only been
+migrated, it reports that there is no such realm. An archived realm is refused; a disabled one is not, since
 disabling a realm is not a reason to stop administering it.
 
 ## Sessions and tokens
@@ -910,8 +914,9 @@ every login and refresh checks the status — without ending anything.
 `must_change` does not stop a login in this phase. A password marked for
 replacement still gets tokens, and the endpoint logs a `WARN` with the realm
 and the session. Refusing would have been the stricter reading, and it would
-have locked out every identity created with `--temporary`, since there is no
-change-password flow to send it through yet. Until one exists,
+have locked out every identity created with `--temporary`, and the first
+administrator with them, since there is no change-password flow to send them
+through yet. Until one exists,
 `aegisd identity set-password` is what clears the flag.
 
 ### What is deliberately not here
@@ -966,6 +971,318 @@ Revoking ends the refresh and nothing else. The access token already issued
 stays valid until its `exp`, which is the trade described at the top of this
 section, seen from the operator's chair.
 
+## Administrators
+
+Everything above can authenticate someone, and none of it says who that someone
+has to be on a new installation. The first administrator is a circular problem:
+an administration API guarded by an administrator's token cannot be what
+creates the first administrator, and a console cannot be what creates the
+account needed to open the console. So the first administrator never goes
+through an interface. It is created by the process itself, at boot, from
+credentials the operator injected — and what makes it an administrator is a row
+in `admin_grants`, which is the whole of the administrative scope for now.
+
+### Injected credentials, not a generated token
+
+The familiar alternative is the one Jenkins made a habit: the server generates
+a one-time secret on its first boot, writes it to a file, and the operator
+reads the file to finish the setup. It does not survive the way aegis is
+deployed. The production image is distroless and the base manifests mount the
+root filesystem read-only, so the file would need an `emptyDir`, and an
+`emptyDir` dies with the pod: a restart before anyone read it would leave a
+token valid in the database and unreadable forever. With several replicas it is
+worse, because the operator has no way to know which pod wrote it.
+
+Injecting the credentials instead removes the machinery along with the problem.
+There is no token table, no hash of the token, no TTL, no "only one pending
+token" rule, no race between replicas over who issues it and no route that
+consumes it. What is left is two values the operator already knows how to
+deliver, because the database password and the master key arrive the same way.
+
+The email and an optional username may come from the `bootstrap.admin` section
+of the configuration file or from `AEGIS_BOOTSTRAP_ADMIN_EMAIL` and
+`AEGIS_BOOTSTRAP_ADMIN_USERNAME`. **The password comes only from the
+environment** — `AEGIS_BOOTSTRAP_ADMIN_PASSWORD`, or
+`AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE` naming a mounted file — and never from
+YAML, by the rule and for the reason the database password and the master key
+follow: a secret that can live in a configuration file eventually does, and
+that file eventually gets committed. A `password` key under `bootstrap.admin`
+is an unknown key and fails the boot. Of the two forms the file is the better
+one wherever a secret can be mounted: its value is not in
+`/proc/<pid>/environ`, is not shown by `kubectl describe`, and is not inherited
+by a subprocess. Setting both fails the boot, as it does for every other
+secret.
+
+### What the boot decides
+
+```mermaid
+flowchart TD
+    SEED(["master realm seeded"]) --> CFG{"email and password configured"}
+    CFG -- no --> HOLDER{"an administrator able to sign in exists"}
+    HOLDER -- no --> NONE["WARN: no administrator able to sign in exists"]
+    HOLDER -- yes --> TEMP
+    NONE --> TEMP
+    CFG -- yes --> ABLE{"an administrator able to sign in exists"}
+    ABLE -- yes --> IGNORED["INFO: the bootstrap credentials were ignored"]
+    ABLE -- no --> INSERT["one transaction: identity, temporary password, global grant"]
+    INSERT -- written --> CREATED["WARN: first administrator created"]
+    INSERT -- "email or username taken" --> AGAIN{"an administrator able to sign in exists now"}
+    AGAIN -- "yes, another replica won" --> IGNORED
+    AGAIN -- no --> OWNER{"an identity holds the configured email"}
+    OWNER -- yes --> COMPLETED["WARN: an existing identity was made the first administrator"]
+    OWNER -- no --> FAIL(["the boot fails: the username belongs to someone else"])
+    IGNORED --> TEMP
+    CREATED --> TEMP
+    COMPLETED --> TEMP
+    TEMP["WARN for each administrator whose password is still the temporary one"] --> DONE(["the boot goes on"])
+```
+
+The bootstrap is idempotent, and it acts in exactly one situation: the master
+realm has no administrator able to sign in. That phrase is one query, and it is
+worth reading literally. An administrator able to sign in is an identity of the
+master realm whose status is `active`, that holds a global grant, and that has
+a password credential. All three, on one identity. A disabled administrator
+does not count, nor does a global grant on an identity with no password, nor
+does any number of grants that name a single realm. Whether the password is
+still the temporary one does not enter into it.
+
+Outside that one situation the configured values are ignored, even when they
+differ from what is stored: past the shape check every configuration value
+gets, the service does not look at them, and it hashes nothing. **This is not a
+password reset channel.** The distinction matters because the opposite reading
+is the natural one: an operator who sees a password in a Secret assumes that
+editing the Secret changes the password. Keycloak's bootstrap variables created
+exactly that confusion. Reading the variable as "the administrator's
+password" rather than "the password the first administrator was born with"
+would also make it a standing back door: anyone able to edit one Secret and
+restart one pod would own the installation. So the boot says what it did
+instead of leaving it to be inferred — an `INFO` reading `an administrator
+already exists; the bootstrap credentials were ignored and can be removed from
+the environment`.
+
+The definition has one consequence that is easy to miss. Disable the only
+administrator while the bootstrap credentials are still configured, and the
+next boot finds no administrator able to sign in and acts: it re-enables that
+identity if the configured email is its own, and creates a second
+administrator if it is not. The credentials are meant to be removed once they
+have done their job, and this is the practical reason.
+
+With nothing configured the boot creates nothing, and asks the same question
+without acting on the answer. When it is no, it logs a `WARN` — `no
+administrator able to sign in exists`, followed by the variables to set and the
+command to run — so an installation nobody can administer says so on every
+boot. It is one condition in both places on purpose: a warning decided by a
+looser rule than the bootstrap would stay silent in exactly the cases the
+bootstrap would have acted on.
+
+### The temporary administrator
+
+The credential is born with `must_change` set. The password that seeded it came
+from a Secret, and the Secret outlasts the moment it was needed for: it stays
+in etcd, in the cluster's backups and, often enough, in the GitOps repository
+it was applied from. A password with that many copies is provisional by
+construction, whatever its strength.
+
+That is also why a weak password is accepted on purpose. The bootstrap section
+has no strength rule — a missing password and one longer than 1024 bytes are
+the only ones refused. Refusing to boot over `admin123` leaves an installation
+with no administrator at all; accepting it and demanding its replacement leaves
+one with an administrator and a warning, which is the better of the two.
+
+The warning is the part that carries the weight, so it does not depend on the
+bootstrap having run. On **every** boot, whether or not credentials are
+configured, the process lists the holders of any grant whose password is still
+marked for replacement and logs a `WARN` for each, with the email:
+`this administrator's password is still the temporary one`, followed by the
+command that replaces it. It stops on the first boot after the password was
+replaced, and not before.
+
+Phase 1 does not enforce the change, and that should be read as plainly as it
+is written. There is no change-password flow, so `must_change` cannot stop a
+login without locking the administrator out — the token endpoint issues tokens
+for a temporary password and logs a `WARN`, as
+[Sessions and tokens](#disabled-realms-disabled-identities-temporary-passwords)
+describes. The flag is reported and logged, nothing more.
+`aegisd identity set-password master <email>`, run without `--temporary`, is
+what clears it.
+
+### Replicas and the two edge paths
+
+Nothing locks the bootstrap. Two replicas starting against an empty database
+both find no administrator and both try to create one; the identity, its
+password and its grant are written in one transaction, the unique indexes on
+`identities` reject the second, and that transaction leaves nothing behind. The replica
+that lost asks the question again, finds the administrator the other one
+created, and adopts it — the way the master realm seed and the key seed already
+settle their own races. An administrator is never observable half made, and a
+lost race is not a failed boot.
+
+When the insert collides and there is *still* no administrator able to sign in,
+it was not a race, and the two unique indexes say two different things.
+
+**The email is held by an identity that cannot administer** — one created
+earlier with `aegisd identity create`, or an administrator that was disabled or
+never had a password. It is completed in place: made active, given the
+configured password as a temporary one, given the global grant if it lacks it,
+and its live sessions are ended. Refusing instead would fail this boot and
+every one after it, for as long as the configuration stood. The log says so at
+`WARN`, since an existing account just changed hands.
+
+**The username is held by someone else**, and no identity has the email. The
+boot fails with the collision. The email is what says who the administrator is;
+a username is a second name for that person, and quietly creating the
+administrator without it, or taking it from its owner, would both be guesses.
+Changing or dropping the configured username is the fix.
+
+### Reset is explicit and offline
+
+Since the boot will not reset a password, something else has to — an
+installation whose only administrator forgot the password, was disabled, or
+lost the grant must have a way back in that is not SQL. It is a command, run
+on purpose by someone who can already reach the database and holds the master
+key: `aegisd bootstrap-admin`.
+
+It reads the same bootstrap configuration the server does, and where the boot
+asks whether anything needs doing, it does not ask. The identity holding the
+configured email becomes a global administrator with the configured password,
+marked temporary: it is made active if it was disabled, the password replaces
+whatever was there, and the global grant is added if missing. An email nobody
+holds creates the administrator, exactly as the boot would. On an identity
+that already exists the configured username is ignored.
+
+The reset also ends every live session of that identity, with the reason
+`revoked`. A reset happens because control of the account is in doubt, and
+whoever held the previous password may still hold a session; a new password
+that left their refresh token working would have fixed nothing. As with any
+revocation, an access token already issued lasts until its `exp`.
+
+### The administrative scope
+
+A grant says that an identity may administer, and what. It is either
+**global** — every realm, including the ones that do not exist yet — or it
+names **one** realm. An identity may hold the global grant and any number of
+targeted ones.
+
+Holders are identities of the `master` realm, always. That does not make the
+master a parent of the other realms: it is an ordinary realm, with its own
+issuer and keys and the same isolation as any other, that happens to be where
+the people who run the installation have their accounts. The alternative is a
+realm hierarchy, and a hierarchy is a second tenancy model layered over the
+first, with its own questions about what a parent may see in a child. A grant
+that points from an identity in one realm at another realm answers the only
+question there is — may this identity administer that realm — without
+introducing a relationship between the realms themselves. An identity of any
+other realm cannot be granted anything: the lookup is scoped to the master, so
+it is reported as not found, the same answer as one that does not exist.
+
+This is deliberately the smallest thing that can answer that question, and it
+is not the authorization model. There are no roles in it, no groups, and
+nothing finer than "administers this realm". Phase 3 of the roadmap builds
+roles, and when it does this becomes a particular case of them: a global grant
+is a role held over every realm, a targeted one a role held over one. It is
+its own table now so that phase 1 can have an administrator without designing
+phase 3 first.
+
+**The table.** `admin_grants` carries `realm_id`, the realm the holder lives
+in, which the service only ever sets to the master's; `identity_id`; and two
+nullable columns, `target_realm_id` and `global_marker`. "At most one global
+grant per identity" is the same kind of rule as "one active key per realm", and
+it gets the same device, the one
+[Realm signing keys](#realm-signing-keys) describes for
+`realm_keys.active_marker`: a marker column that holds `'y'` on a global grant
+and `NULL` on every other, under a plain unique index,
+`uq_admin_grants_global` on `(identity_id, global_marker)`. The natural form is
+a partial index, MySQL and MariaDB have none, and NULLs not colliding in a
+unique index is the property all four engines share. `uq_admin_grants_target`
+on `(identity_id, target_realm_id)` does the same for targeted grants, and the
+two indexes stay out of each other's way for that same reason: a global grant
+is `NULL` in the column the second one covers, and a targeted grant is `NULL`
+in the column the first one covers.
+
+`ck_admin_grants_scope` is what makes a grant global or targeted and never
+both, or neither: it requires `target_realm_id IS NULL` to hold exactly when
+`global_marker IS NOT NULL`. Both sides are non-nullable expressions, so the
+check cannot evaluate to NULL and pass by accident — the argument
+`ck_realm_keys_marker` rests on. `ck_admin_grants_marker` keeps the marker to
+`'y'`. As with the key marker, the aggregate has no such field: a `Grant` has a
+target that may be empty, and the repository derives the marker from it.
+
+All three foreign keys cascade — `fk_admin_grants_realm`,
+`fk_admin_grants_identity` and `fk_admin_grants_target` — so a grant does not
+outlive its holder or the realm it names. `ix_admin_grants_realm` and
+`ix_admin_grants_target` keep those cascades from scanning, for the reason
+`ix_credentials_realm` exists.
+
+**Authorization.** `AdminService.Authorize` takes an identity and a target
+realm and answers yes or no. Every refusal is one error,
+`admin.ErrNotAuthorized`: an identity that does not exist in the master realm,
+one that is disabled, one with no grant covering the target, and an empty
+target are indistinguishable to the caller, so that no endpoint built on it can
+leak which rule failed by forwarding what it was told. A disabled administrator
+is not authorized, whatever it holds — disabling an identity has to take
+administration away at once, without a second step somebody forgets. The check
+reads the grants when it is asked. Nothing about administration is written into
+an access token, so a grant revoked a second ago is already gone, and there is
+no claim left behind to outlive it.
+
+The target's status is not consulted, and neither is its existence.
+Administering a disabled realm is how it gets enabled again; a check that
+refused it would make disabling a realm a one-way door.
+
+There is no "last administrator" guard. Revoking the only global grant, or
+disabling its only holder, is allowed. A guard would protect against a mistake
+that is one command from being undone: `aegisd bootstrap-admin` is the way back
+in, and it works whatever state the grants were left in.
+
+### What is deliberately not here
+
+No administration API and no console. Nothing in the server calls `Authorize`,
+and nothing verifies an access token — the two exist, tested, as the pieces
+those surfaces will be built on, for the reason token verification was written
+before any endpoint accepted a token. Until then an administrator is someone
+who can sign in at the token endpoint and hold a grant, and every act of
+administration is still a subcommand run by someone with access to the
+database.
+
+No roles, no groups and no permission finer than "administers this realm"; a
+realm administrator and a global one differ in reach and in nothing else. No
+flow that forces the temporary password to be changed. No guard on the last
+administrator. And nothing ends an identity's sessions when a grant is revoked:
+there is nothing for them to lose, since no endpoint grants a session anything
+on account of it.
+
+### `aegisd bootstrap-admin`
+
+`aegisd bootstrap-admin` is the reset described above, and takes no arguments:
+who the administrator is and what its password becomes are the bootstrap
+configuration, read the way the server reads it. Without an email and a
+password configured it does nothing and says which variables to set.
+
+It needs no server and no server to have ever run. The master realm is normally
+seeded by the first boot, and a command that depended on it would be useless
+for the one installation that most needs it — one being prepared before
+anything serves — so it seeds the master realm and its keys itself, through the
+same call the boot makes and under the same issuer rule. It does not migrate:
+the schema has to be current, by `aegisd migrate` or by an earlier boot. That
+makes "migrate, then bootstrap, then start the replicas" a valid order, with no
+bootstrap credentials in the server's environment at all.
+
+### `aegisd admin`
+
+`aegisd admin` operates the grants: `list`, `grant` and `revoke`, with no
+server running. `grant` and `revoke` take a login — an email or a username,
+looked up in the master realm, the only one whose identities administer — and
+optionally a realm's slug. Without the slug the grant is the global one.
+`list` prints the grants oldest first, 500 at most, each with its holder's
+email, username and status and a scope that is `global` or the realm's slug.
+
+The realm is looked up without the status rule the protocol endpoints apply,
+so a disabled or archived realm can be named: the grant has to be there before
+the realm is brought back, not after. Granting what is already held and
+revoking what is not are errors, not silent successes, so a mistyped realm does
+not pass for a completed change. Neither verb touches the identity, its
+password or its sessions.
+
 ## Startup
 
 `main` parses nothing and holds the single exit point. Everything else lives in
@@ -989,16 +1306,31 @@ migration ran: the check is not conditional on it, because an operator who
 forgot `aegisd migrate` with migration on boot disabled would otherwise serve
 requests until the first query touched a missing column. `setServices` builds
 the store, the key service, the realm service, the identity and credential
-services and the session service, and then seeds the master realm; it is a
-step of its own, separate from `setSchema`, because the seed needs services
-something has to own — built as locals instead, the admin API would end up
-constructing a second set that is not the application's. The session service
-is built from the credential service and the key service, which it reaches as
-a `SignerSource`: it verifies passwords through the one and signs through the
-other, and holds no second path to either. Nothing is seeded for identities,
-credentials or sessions: the boot creates none, in any profile. The session
-service is the one the token endpoint calls, handed to the protocol handler in
-`setWeb`; the identity service is still reached only from the command line.
+services, the session service and the admin service, then seeds the master
+realm, and then ensures its first administrator; it is a step of its own,
+separate from `setSchema`, because the seed needs services something has to
+own — built as locals instead, the admin API would end up constructing a
+second set that is not the application's. The session service is built from
+the credential service and the key service, which it reaches as a
+`SignerSource`: it verifies passwords through the one and signs through the
+other, and holds no second path to either. The admin service is built from the
+identity and credential services in the same way, so the administrator it
+creates is hashed and stored by the code every other identity goes through.
+The session service is the one the token endpoint calls, handed to the
+protocol handler in `setWeb`. The identity and admin services are reached by
+the boot and from the command line, and by no request: no handler holds
+either.
+
+The administrator is not a twelfth step. It runs at the end of `setServices`,
+after the `master realm ready` line, because it needs exactly what that step
+has just produced — the services and a master realm to put the identity in —
+and nothing later in the list. It is the only thing the boot seeds beyond the
+realm and its keys, and it seeds it only when the installation was configured
+with a first administrator and has none able to sign in; otherwise the boot
+creates no identity, no credential and no session, in any profile.
+[Administrators](#administrators) has the decision in full. A failure there
+fails the boot, like the seed before it: a username collision is the one an
+operator is likely to meet.
 
 ```mermaid
 flowchart TD
@@ -1033,6 +1365,16 @@ few single-row round trips on an already open connection. On a first boot it
 now also covers generating the master realm's two key pairs. RSA-2048 and P-256
 fit inside it comfortably, but the borrow is no longer only about round trips,
 and anyone tuning `connect_timeout` down should know what else is being cut.
+
+The administrator borrows the same setting and not the same budget: it starts
+a deadline of its own, another `connect_timeout`, once the seed has finished.
+Sharing one would have had the argon2id hash of a first boot paid out of
+whatever generating two key pairs left over, and the first boot is the one
+that does both. That deadline covers the bootstrap and the listing of
+temporary administrators behind the warning. On every boot but the one that
+creates or completes the administrator it is a few round trips, since a
+password is hashed only when one is about to be written.
+
 The `master realm ready` line carries the active `kid` per algorithm — active only, because the log encoder appends fields without deduplicating and the passive keys would repeat `kid_RS256` after a rotation, because
 that is the first thing anyone looks for when a client reports a signature it
 cannot verify.

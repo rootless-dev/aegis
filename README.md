@@ -7,15 +7,20 @@ its own signing keys and its own issuer. An identity belongs to the realm that
 owns it, so the same email address may be two different people in two different
 realms.
 
-> **Status: early.** Realms exist: the schema is migrated on boot or by
-> `aegisd migrate`, and a `master` realm is seeded with its signing keys.
-> Identities and password credentials exist too, created and operated with
-> `aegisd identity`. A token endpoint per realm authenticates them: a password
-> opens a server-side session and returns a signed access token and a rotating
-> refresh token, and `aegisd session` lists and revokes sessions. Only the
-> `master` realm authenticates for now, and there are no OAuth clients, no
-> authorization code flow, no logout endpoint and no discovery document yet.
-> See the [roadmap](docs/roadmap.md).
+> **Status: early.** Phase 1 of the [roadmap](docs/roadmap.md), core identity,
+> is complete. The schema is migrated on boot or by `aegisd migrate`, and a
+> `master` realm is seeded with its signing keys. Identities and password
+> credentials are created and operated with `aegisd identity`. A token endpoint
+> per realm authenticates them: a password opens a server-side session and
+> returns a signed access token and a rotating refresh token, and
+> `aegisd session` lists and revokes sessions. The first administrator is
+> created at boot from `AEGIS_BOOTSTRAP_ADMIN_EMAIL` and
+> `AEGIS_BOOTSTRAP_ADMIN_PASSWORD`, with a temporary password; `aegisd admin`
+> grants and revokes administration, and `aegisd bootstrap-admin` resets an
+> administrator offline. There is no administration API and no console yet, so
+> administration is those subcommands. Only the `master` realm authenticates
+> for now, and there are no OAuth clients, no authorization code flow, no
+> logout endpoint and no discovery document.
 
 ## Requirements
 

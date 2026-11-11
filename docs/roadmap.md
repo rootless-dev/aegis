@@ -15,10 +15,16 @@ SQLite, and a server-rendered page surface with its own asset pipeline.
 
 ## Phase 1 — core identity
 
-The smallest thing that is already an identity provider: it authenticates and
-issues a verifiable token.
+Complete. The smallest thing that is already an identity provider: it
+authenticates and issues a verifiable token. End to end, an installation given
+a database, a master key and two variables naming its first administrator
+boots, migrates its schema, seeds the `master` realm with its signing keys and
+creates that administrator; the administrator signs in at the token endpoint
+and receives an access token anyone holding the realm's JWKS can verify, and a
+refresh token that keeps the session alive until it is revoked, reused or
+expires.
 
-Landed so far: schema migration on boot with a version check, the `realms` table
+What landed, in the order it did: schema migration on boot with a version check, the `realms` table
 across the four dialects, the realm aggregate with the service and repository
 around it, a `master` realm seeded idempotently, and an `aegisd migrate`
 subcommand for migrating outside the boot. Then the key half of the trust root:
@@ -30,8 +36,7 @@ unique per realm by email and by an optional username, a `credential` table
 kept apart from it, passwords hashed with argon2id and verified without
 revealing whether a login exists, and an `aegisd identity` subcommand that
 creates identities, sets passwords and disables or enables them from the
-command line. Nothing is seeded for them, so an installation has no identity
-until an operator creates one. Then what the phase was named for: a token
+command line. Then what the phase was named for: a token
 endpoint per realm, at Keycloak's path, where a password opens a server-side
 session and returns an access token — a JWT signed by the realm's key and
 verifiable against its JWKS — together with an opaque refresh token that is
@@ -39,11 +44,35 @@ rotated on every use, stored only as a hash, and ends its whole session when
 it is presented twice. The lifetimes are columns on the realm, and so is the
 switch that allows the password grant, which is on in `master` and off
 everywhere else. An `aegisd session` subcommand lists and revokes sessions,
-and is the only revocation there is: no logout, no introspection and no
-discovery document until phase 2, no rate limiting on the endpoint until
-phase 4, and nothing yet removes the rows of sessions that are over. The list
-below is the whole phase; the first administrator's bootstrap and the
-administrative scope are what is still ahead in it.
+and is the only revocation there is. Last, someone to sign in: the first
+administrator, created at boot in the `master` realm from an email and a
+password the operator injects, acted on only while that realm has no
+administrator able to sign in and ignored from then on, born with a temporary
+password the log keeps warning about until it is replaced, and reset only by
+`aegisd bootstrap-admin`, offline. With it the administrative scope — a grant
+that is global or names one realm, held by identities of `master`, and a check
+that answers whether an identity may administer a realm — operated with
+`aegisd admin`.
+
+Complete means the list below, and it is worth being exact about what that
+leaves out.
+
+- **No administration API and no console.** The administrative scope is a table
+  and a check that nothing in the server calls yet, and no endpoint accepts an
+  access token. Every act of administration is a subcommand run by someone with
+  access to the database and the master key. This document lists the
+  administration API and the console under phase 6.
+- **Only `master` authenticates in practice.** The password grant is off in
+  every realm but `master`, and nothing creates another realm or changes a
+  realm's settings — no endpoint and no subcommand. The lifetimes are the
+  defaults for the same reason.
+- **The temporary password is not enforced.** It is flagged and logged; no flow
+  makes anyone change it, and a login with it gets tokens.
+- **The limits the earlier slices stated remain.** No logout, no introspection
+  and no discovery document until phase 2. No rate limiting or brute force
+  protection on the token endpoint until phase 4. Nothing removes the rows of
+  sessions that are over. Changing a password does not end the identity's
+  sessions.
 
 - `realm` as the isolation boundary, with its own issuer and signing keys
 - `identity` scoped to a realm, unique per realm rather than globally
