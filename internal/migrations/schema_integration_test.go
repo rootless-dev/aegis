@@ -335,6 +335,31 @@ func seedTokenChain(t *testing.T, db *database.DB, realmID, sessionID string) []
 	return ids
 }
 
+// targetRealmID and marker are any so a case can pass nil for NULL.
+func insertAdminGrant(db *database.DB, realmID, identityID string, targetRealmID, marker any) error {
+	return db.Gorm.Exec(
+		"INSERT INTO admin_grants (id, realm_id, identity_id, target_realm_id, global_marker, created_at)"+
+			" VALUES (?, ?, ?, ?, ?, ?)",
+		uuid.NewString(), realmID, identityID, targetRealmID, marker, now(),
+	).Error
+}
+
+func seedGlobalGrant(t *testing.T, db *database.DB, realmID, identityID string) {
+	t.Helper()
+
+	if err := insertAdminGrant(db, realmID, identityID, nil, "y"); err != nil {
+		t.Fatalf("seeding the global grant: %v", err)
+	}
+}
+
+func seedRealmGrant(t *testing.T, db *database.DB, realmID, identityID, targetRealmID string) {
+	t.Helper()
+
+	if err := insertAdminGrant(db, realmID, identityID, targetRealmID, nil); err != nil {
+		t.Fatalf("seeding the realm grant: %v", err)
+	}
+}
+
 // SQLite keeps no catalogue of constraints, only the text that declared them.
 func hasCheckConstraint(t *testing.T, db *database.DB, table, name string) bool {
 	t.Helper()
@@ -792,6 +817,192 @@ func TestSessionsAndTokensHoldTheirRules(t *testing.T) {
 
 		if err := insertRefreshToken(db, uuid.NewString(), realmID, sessionID, uuid.NewString(), tokenHash()); err == nil {
 			t.Fatal("expected fk_refresh_tokens_parent to refuse an unknown parent, but the insert succeeded")
+		}
+	})
+}
+
+func TestAdminGrantsHoldTheirRules(t *testing.T) {
+	db := openEngine(t)
+
+	t.Run("the checks carry their names", func(t *testing.T) {
+		for _, name := range []string{"ck_admin_grants_scope", "ck_admin_grants_marker"} {
+			if !hasCheckConstraint(t, db, "admin_grants", name) {
+				t.Errorf("want a check constraint named %s on admin_grants, found none", name)
+			}
+		}
+	})
+
+	t.Run("an identity holds one global grant", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-global")
+		identityID := seedIdentity(t, db, masterID, "one@example.com")
+
+		if err := insertAdminGrant(db, masterID, identityID, nil, "y"); err != nil {
+			t.Fatalf("a global grant must be accepted: %v", err)
+		}
+
+		if err := insertAdminGrant(db, masterID, identityID, nil, "y"); err == nil {
+			t.Fatal("expected uq_admin_grants_global to refuse a second global grant, but the insert succeeded")
+		}
+	})
+
+	t.Run("an identity holds one grant for a realm", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-target")
+		targetID := seedRealm(t, db, "grant-target-first")
+		otherTargetID := seedRealm(t, db, "grant-target-second")
+		identityID := seedIdentity(t, db, masterID, "one@example.com")
+
+		if err := insertAdminGrant(db, masterID, identityID, targetID, nil); err != nil {
+			t.Fatalf("a realm grant must be accepted: %v", err)
+		}
+
+		if err := insertAdminGrant(db, masterID, identityID, otherTargetID, nil); err != nil {
+			t.Fatalf("a grant for another realm must be accepted: %v", err)
+		}
+
+		if err := insertAdminGrant(db, masterID, identityID, targetID, nil); err == nil {
+			t.Fatal("expected uq_admin_grants_target to refuse a second grant for the realm, but the insert succeeded")
+		}
+	})
+
+	// Both unique indexes rest on NULLs not colliding: a global row is NULL in
+	// one of them and a realm row is NULL in the other.
+	t.Run("a global grant and realm grants coexist on one identity", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-mixed")
+		identityID := seedIdentity(t, db, masterID, "one@example.com")
+
+		seedGlobalGrant(t, db, masterID, identityID)
+		seedRealmGrant(t, db, masterID, identityID, seedRealm(t, db, "grant-mixed-first"))
+		seedRealmGrant(t, db, masterID, identityID, seedRealm(t, db, "grant-mixed-second"))
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM admin_grants WHERE identity_id = ?", identityID); got != 3 {
+			t.Errorf("want 3 grants on the identity, got %d", got)
+		}
+	})
+
+	t.Run("two identities each hold a global grant", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-two-global")
+
+		seedGlobalGrant(t, db, masterID, seedIdentity(t, db, masterID, "one@example.com"))
+
+		if err := insertAdminGrant(db, masterID, seedIdentity(t, db, masterID, "two@example.com"), nil, "y"); err != nil {
+			t.Fatalf("a global grant for another identity must be accepted: %v", err)
+		}
+	})
+
+	t.Run("a grant is global or names a realm", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-scope")
+		targetID := seedRealm(t, db, "grant-scope-target")
+
+		seedGlobalGrant(t, db, masterID, seedIdentity(t, db, masterID, "global@example.com"))
+		seedRealmGrant(t, db, masterID, seedIdentity(t, db, masterID, "realm@example.com"), targetID)
+
+		if err := insertAdminGrant(db, masterID, seedIdentity(t, db, masterID, "both@example.com"), targetID, "y"); err == nil {
+			t.Error("expected ck_admin_grants_scope to refuse a target with the marker, but the insert succeeded")
+		}
+
+		if err := insertAdminGrant(db, masterID, seedIdentity(t, db, masterID, "neither@example.com"), nil, nil); err == nil {
+			t.Error("expected ck_admin_grants_scope to refuse a grant with neither, but the insert succeeded")
+		}
+	})
+
+	t.Run("the marker holds nothing but 'y'", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-marker")
+
+		seedGlobalGrant(t, db, masterID, seedIdentity(t, db, masterID, "one@example.com"))
+
+		if err := insertAdminGrant(db, masterID, seedIdentity(t, db, masterID, "two@example.com"), nil, "n"); err == nil {
+			t.Fatal("expected ck_admin_grants_marker to refuse 'n', but the insert succeeded")
+		}
+	})
+
+	t.Run("a grant needs an identity and a target that exist", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-orphan")
+		identityID := seedIdentity(t, db, masterID, "one@example.com")
+
+		if err := insertAdminGrant(db, masterID, uuid.NewString(), nil, "y"); err == nil {
+			t.Error("expected fk_admin_grants_identity to refuse an unknown identity, but the insert succeeded")
+		}
+
+		if err := insertAdminGrant(db, masterID, identityID, uuid.NewString(), nil); err == nil {
+			t.Error("expected fk_admin_grants_target to refuse an unknown realm, but the insert succeeded")
+		}
+	})
+
+	t.Run("deleting an identity removes its grants", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-cascade-identity")
+		targetID := seedRealm(t, db, "grant-cascade-identity-target")
+		identityID := seedIdentity(t, db, masterID, "one@example.com")
+		keptIdentityID := seedIdentity(t, db, masterID, "two@example.com")
+
+		for _, id := range []string{identityID, keptIdentityID} {
+			seedGlobalGrant(t, db, masterID, id)
+			seedRealmGrant(t, db, masterID, id, targetID)
+		}
+
+		if err := db.Gorm.Exec("DELETE FROM identities WHERE id = ?", identityID).Error; err != nil {
+			t.Fatalf("deleting the identity: %v", err)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM admin_grants WHERE identity_id = ?", identityID); got != 0 {
+			t.Errorf("want the grants gone with the identity, got %d", got)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM admin_grants WHERE identity_id = ?", keptIdentityID); got != 2 {
+			t.Errorf("want the other identity to keep its 2 grants, got %d", got)
+		}
+	})
+
+	t.Run("deleting the realm of an identity removes its grants", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-cascade-realm")
+		keptMasterID := seedRealm(t, db, "grant-cascade-realm-kept")
+		targetID := seedRealm(t, db, "grant-cascade-realm-target")
+
+		for _, id := range []string{masterID, keptMasterID} {
+			identityID := seedIdentity(t, db, id, "one@example.com")
+
+			seedGlobalGrant(t, db, id, identityID)
+			seedRealmGrant(t, db, id, identityID, targetID)
+		}
+
+		if err := db.Gorm.Exec("DELETE FROM realms WHERE id = ?", masterID).Error; err != nil {
+			t.Fatalf("deleting the realm: %v", err)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM admin_grants WHERE realm_id = ?", masterID); got != 0 {
+			t.Errorf("want the grants gone with the realm, got %d", got)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM admin_grants WHERE realm_id = ?", keptMasterID); got != 2 {
+			t.Errorf("want the other realm to keep its 2 grants, got %d", got)
+		}
+	})
+
+	// The second path from realms to admin_grants: the identity and its realm
+	// stay, and only the rows naming the deleted realm go.
+	t.Run("deleting a target realm removes the grants that name it", func(t *testing.T) {
+		masterID := seedRealm(t, db, "grant-cascade-target")
+		targetID := seedRealm(t, db, "grant-cascade-target-gone")
+		keptTargetID := seedRealm(t, db, "grant-cascade-target-kept")
+		identityID := seedIdentity(t, db, masterID, "one@example.com")
+
+		seedGlobalGrant(t, db, masterID, identityID)
+		seedRealmGrant(t, db, masterID, identityID, targetID)
+		seedRealmGrant(t, db, masterID, identityID, keptTargetID)
+
+		if err := db.Gorm.Exec("DELETE FROM realms WHERE id = ?", targetID).Error; err != nil {
+			t.Fatalf("deleting the target realm: %v", err)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM admin_grants WHERE target_realm_id = ?", targetID); got != 0 {
+			t.Errorf("want the grants naming the realm gone, got %d", got)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM admin_grants WHERE identity_id = ? AND global_marker = 'y'", identityID); got != 1 {
+			t.Errorf("want the global grant kept, got %d", got)
+		}
+
+		if got := countRows(t, db, "SELECT COUNT(*) FROM admin_grants WHERE identity_id = ? AND target_realm_id = ?", identityID, keptTargetID); got != 1 {
+			t.Errorf("want the grant for the other realm kept, got %d", got)
 		}
 	})
 }

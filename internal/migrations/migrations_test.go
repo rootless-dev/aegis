@@ -13,7 +13,7 @@ var dialects = []string{"postgres", "mysql", "mariadb", "sqlite"}
 
 // Bumped by hand, which is the point: a value derived from the directory would
 // agree with itself no matter which dialect is missing a migration.
-const latestVersion = 25
+const latestVersion = 30
 
 func TestForIsRootedAtTheDialectDirectory(t *testing.T) {
 	for _, dialect := range dialects {
