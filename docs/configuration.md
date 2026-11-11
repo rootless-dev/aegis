@@ -336,9 +336,24 @@ to trust the one message an attacker on the path could have written.
 An empty environment variable counts as absent, so a default cannot be cleared
 by exporting the variable empty.
 
+One pair of variables is read outside this table, because it is not
+configuration: `AEGIS_IDENTITY_PASSWORD`, or `AEGIS_IDENTITY_PASSWORD_FILE`
+naming a file that holds it, is the password `aegisd identity create` and
+`aegisd identity set-password` give an identity. The server never reads it. It
+follows the rule of every other secret here — no configuration file key, no
+command line flag, and both forms set is an error — and belongs in the
+environment of that one invocation rather than in `.env`, where it would
+outlive the command it was meant for.
+
 ## What is not configurable
 
 Version, revision and build time. They identify the binary and are stamped into
 it at build time, reported by `internal/buildinfo`. A version the environment
 could override is a version that may disagree with the code actually running,
 and that is when the information stops being useful.
+
+The password hashing parameters. argon2id runs at 64 MiB, 3 passes and
+parallelism 4, fixed in `internal/infra/passhash`. Every stored hash records
+the parameters it was produced with, so raising them is a release that
+re-hashes each password at its next successful login, not a setting; a key
+here would only add the ability to run weaker ones.

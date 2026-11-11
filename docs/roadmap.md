@@ -25,8 +25,16 @@ subcommand for migrating outside the boot. Then the key half of the trust root:
 a signing key per realm and per algorithm, encrypted at rest under an
 installation master key, rotation and a JWKS published per realm, the `master`
 realm seeded with its keys alongside its issuer, and an `aegisd key` subcommand
-that operates all of it with no server running. Nothing signs a token yet.
-Everything below is still ahead.
+that operates all of it with no server running. Then the people: an `identity`
+unique per realm by email and by an optional username, a `credential` table
+kept apart from it, passwords hashed with argon2id and verified without
+revealing whether a login exists, and an `aegisd identity` subcommand that
+creates identities, sets passwords and disables or enables them from the
+command line. Nothing is seeded for them, so an installation has no identity
+until an operator creates one. No HTTP endpoint authenticates anyone yet, and
+nothing signs a token. The list below is the whole phase; sessions, tokens, the
+first administrator's bootstrap and the administrative scope are what is still
+ahead in it.
 
 - `realm` as the isolation boundary, with its own issuer and signing keys
 - `identity` scoped to a realm, unique per realm rather than globally

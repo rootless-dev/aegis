@@ -196,6 +196,43 @@ the cause. Production refuses to boot on the same disagreement instead: every
 client validates the issuer byte for byte, so serving two different ones
 silently is worse than not starting.
 
+## Identities
+
+```sh
+aegisd identity create <realm> <email> [username] [--temporary] [flags]   create an identity
+aegisd identity set-password <realm> <login> [--temporary] [flags]        set or replace the password
+aegisd identity list <realm> [flags]                                      list a realm's identities
+aegisd identity disable <realm> <login> [flags]                           refuse authentication for the identity
+aegisd identity enable <realm> <login> [flags]                            allow it again
+```
+
+Nothing is seeded, so a development database has no user until one is created.
+A login is an email or a username. The password is never an argument — it
+would sit in `ps` and in the shell history — and is read from
+`AEGIS_IDENTITY_PASSWORD`, or from the file `AEGIS_IDENTITY_PASSWORD_FILE`
+names; setting both is an error.
+
+```sh
+make run   # once, and stop it: the first boot is what seeds the master realm
+AEGIS_IDENTITY_PASSWORD=devpassword \
+  go run ./cmd/aegisd identity create master dev@example.com dev --dev
+```
+
+That writes to the sqlite file `make run` uses. Against compose or Tilt, give
+the command the same `AEGIS_DATABASE_*` variables the service there runs with:
+it opens the database the way the server does, and like every subcommand it
+needs `AEGIS_CRYPTO_MASTER_KEY`, which `make master-key` writes into `.env`.
+
+- `create` without a password leaves the identity with no credential; it cannot
+  authenticate until `set-password` gives it one.
+- `--temporary` marks the password as one that has to be changed at the next
+  login. With no password supplied it is a usage error.
+- `disable` and `enable` change whether the identity may authenticate; neither
+  touches its credential.
+
+There is nothing to log in to yet: no HTTP endpoint verifies a password, so
+what these commands produce is rows for the next slice to authenticate against.
+
 ## Tests
 
 ```sh

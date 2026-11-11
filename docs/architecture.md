@@ -3,26 +3,29 @@
 ## Layout
 
 ```
-cmd/aegisd             entry point: signals and exit code, nothing else
-internal/application   assembly and lifecycle
-internal/cli           subcommand dispatch for `aegisd migrate`, `aegisd key` and their verbs
-internal/configs       configuration structs, defaults and validation
-internal/domain/realm  the realm aggregate; imports nothing internal
-internal/domain/key    the key aggregate; imports nothing internal
-internal/service       the use cases; declares the interfaces they consume
-internal/repository    implements the service interfaces over GORM
-internal/migrations    the embedded schema SQL, one directory per dialect
-internal/handler/page  the handlers for the HTML surface
-internal/handler/oidc  the handlers for the protocol surface
-internal/http          server, middleware, response format
-internal/http/assets   fingerprints and serves the static files
-internal/http/render   composes layouts with pages and writes HTML, over an injected filesystem
-internal/infra         logging, graceful shutdown, health, env parsing
-internal/infra/sealer  AES-256-GCM over the installation's master key
-internal/infra/keygen  key pair generation
-internal/buildinfo     identity of the running binary
-internal/templates     owns the embedded templates and assets; declares two filesystems and no behaviour
-test/integration       exercises the compiled binary
+cmd/aegisd                  entry point: signals and exit code, nothing else
+internal/application        assembly and lifecycle
+internal/cli                subcommand dispatch for `aegisd migrate`, `aegisd key`, `aegisd identity` and their verbs
+internal/configs            configuration structs, defaults and validation
+internal/domain/realm       the realm aggregate; imports nothing internal
+internal/domain/key         the key aggregate; imports nothing internal
+internal/domain/identity    the identity aggregate; imports nothing internal
+internal/domain/credential  the credential aggregate; imports nothing internal
+internal/service            the use cases; declares the interfaces they consume
+internal/repository         implements the service interfaces over GORM
+internal/migrations         the embedded schema SQL, one directory per dialect
+internal/handler/page       the handlers for the HTML surface
+internal/handler/oidc       the handlers for the protocol surface
+internal/http               server, middleware, response format
+internal/http/assets        fingerprints and serves the static files
+internal/http/render        composes layouts with pages and writes HTML, over an injected filesystem
+internal/infra              logging, graceful shutdown, health, env parsing
+internal/infra/sealer       AES-256-GCM over the installation's master key
+internal/infra/keygen       key pair generation
+internal/infra/passhash     argon2id password hashing, encoded as PHC strings
+internal/buildinfo          identity of the running binary
+internal/templates          owns the embedded templates and assets; declares two filesystems and no behaviour
+test/integration            exercises the compiled binary
 ```
 
 `internal/templates` declares the two embeds and nothing else: a template and an
@@ -90,11 +93,13 @@ imports all three, because wiring them together is its job: it builds a
 Inside `internal/service` those interfaces are split by who consumes them, not
 gathered in one file. A repository interface sits beside its service —
 `RealmRepository` and `RealmQuery` in `realm.go`, `RealmKeyRepository` in
-`key.go` — so one file shows both the use case and the contract it depends on.
-`ports.go` keeps only what crosses more than one use case: `Store`, and the
-ports reaching outside the process. The split is worth doing before it hurts:
-with two aggregates a single file was 111 lines, and identity, credential,
-session and refresh token would each add a repository and its query type.
+`key.go`, `IdentityRepository` and `IdentityQuery` in `identity.go`,
+`CredentialRepository` in `credential.go` — so one file shows both the use case
+and the contract it depends on. `ports.go` keeps only what crosses more than
+one use case: `Store`, and the ports reaching outside the process. The split
+was worth doing before it hurt: with two aggregates a single file was 111
+lines, identity and credential have each added a repository since, and session
+and refresh token will do the same.
 
 `Store` stays accessors and `InTx`, nothing else. It is the one interface every
 fake in the test suite must implement in full, so a method that did work there
@@ -363,6 +368,197 @@ carrying a problem of its own, since a rotation performed on one replica leaves
 every other one signing with what it cached. That is a question for the slice
 that has a consumer to measure.
 
+## Identities and credentials
+
+An identity is who someone is inside one realm; a credential is how that
+identity proves it. They are two tables, one to many, and two aggregates —
+`internal/domain/identity` and `internal/domain/credential` — rather than a
+`password_hash` column on the identity. The column is the shorter road today
+and the wrong shape the day a second factor or a federated login arrives: each
+is another proof for the same person, and a model with the proof folded into
+the person has to be taken apart to admit one. `ck_credentials_type` admits
+only `'password'` for now, and `uq_credentials_type` on `(identity_id, type)`
+keeps it to one credential per type, so "the password of this identity" is a
+single row and never a choice between several.
+
+```mermaid
+erDiagram
+    realms ||--o{ identities : "fk_identities_realm, ON DELETE CASCADE"
+    realms ||--o{ credentials : "fk_credentials_realm, ON DELETE CASCADE"
+    identities ||--o{ credentials : "fk_credentials_identity, ON DELETE CASCADE"
+```
+
+Uniqueness is per realm and never global: `uq_identities_email` covers
+`(realm_id, email)` and `uq_identities_username` covers `(realm_id, username)`,
+realm first in both. That is the README's opening promise made into a
+constraint — the same address may be two different people in two realms — and
+a global unique email would have turned the tenancy boundary into something one
+tenant can probe from inside another. Email is required and username is
+optional. The optional half rests on the property `active_marker` already
+rests on, NULLs not colliding in a unique index on any of the four engines:
+the aggregate's "no username" is the empty string, the repository stores it as
+`NULL`, and any number of identities without a username coexist in one realm
+where two empty strings would not.
+
+Both are normalised in the aggregate, not in SQL. The MySQL and MariaDB tables
+are created under `utf8mb4_bin`, so the database compares bytes, and it is the
+lowercasing in `identity.New` that makes `Ana@Example.com` and
+`ana@example.com` the same row rather than two. Leaving it to a
+case-insensitive collation would have meant four engines agreeing on what
+"same" means, which they do not. `Rehydrate` refuses a stored value that is not
+in normal form instead of repairing it: a lookup by the normalised value would
+never have found that row, so quietly fixing it on the way out would hide a row
+no login can reach. A username cannot contain `@`, and that is what lets a
+login identifier be told apart with no ambiguity — one with an `@` is looked up
+as an email, one without as a username, and the two namespaces cannot collide.
+Allowing it would have made "which identity did this person mean" a question
+with two possible answers.
+
+Every method of `IdentityRepository` takes the realm id and filters on it in
+SQL, and so does the credential lookup, so a query that forgets the tenant does
+not compile — the alternative is a rule each new call site has to remember, in
+a product whose worst failure is leaking across exactly that line. An identity
+that exists in another realm is reported as not found, the same answer as one
+that does not exist. `credentials` carries its own `realm_id` for that reason,
+even though the identity it points at already has one: without it, scoping a
+credential query to a tenant would need a join, and a query that left the join
+out would still be valid SQL. `ix_credentials_realm` is what keeps the cascade
+from `realms` from scanning the table, since no engine but MySQL and MariaDB
+indexes a foreign key on its own.
+
+The unique rules here are indexes rather than table constraints, for the
+reason the realm keys section gives about SQLite and `DROP CONSTRAINT`; these
+are again the rules most likely to change, on the day a credential type admits
+more than one row per identity.
+
+`must_change` lives on the credential and not on the identity, because it is
+the proof that is compromised or provisional, not the person. On the identity
+it would be one flag standing for every credential the identity holds, and an
+administrator resetting a password would be marking a passkey as suspect along
+with it.
+
+### Passwords
+
+Passwords are hashed with argon2id and stored in the PHC string format, by
+`internal/infra/passhash`. The parameters are fixed in code — 64 MiB of memory,
+3 passes, parallelism 4, which is the second recommendation of RFC 9106 — and
+there is no configuration key for them. What makes that affordable is the PHC
+string: it carries the parameters it was produced with, so `Verify` reads them
+from the row rather than from the process, and reports a match made under
+parameters other than the current ones as needing a re-hash. Raising the cost
+later is therefore not a migration; each credential is re-hashed on its next
+successful login, while the password is in hand. A configuration key would
+have bought the ability to choose weaker parameters per installation and
+little else. One hash at these parameters took about 50 ms on the development
+machine this was written on, a figure a test logs and does not assert: it is a
+measurement of one machine, not a promise about a customer's.
+
+Reading the parameters from the row has a cost of its own. A stored hash is
+read back as instructions for how much to compute, and on-prem the customer's
+DBA can write to that table, so `Verify` bounds what it will honour — memory up
+to 1 GiB, 16 passes, parallelism 64, and a bounded salt and key length — and
+refuses anything beyond before deriving a single byte. Without the ceiling, one
+edited row would be a way to make a login allocate whatever the row asked for.
+A password longer than 1024 bytes is refused for the same kind of reason: it
+bounds what one request can hand the hasher, and it is not a strength rule.
+
+Hashing happens outside the transaction, the same rule as key generation and
+for the same reason: tens of milliseconds and 64 MiB of computation that
+touches no row should not hold a pooled connection while it runs. The
+credential is prepared first and persisted inside a transaction the caller
+owns, which is also what lets an identity and its password be written together
+— an identity that was meant to have a password is never observable without
+it.
+
+### Verification
+
+`CredentialService.VerifyPassword` answers one question — is this the password
+of that login in this realm — and creates nothing.
+
+```mermaid
+flowchart TD
+    IN(["realm id, login, password"]) --> LEN{"password within 1024 bytes"}
+    LEN -- no --> DUMMY["verify against the dummy hash"]
+    LEN -- yes --> ID{"identity found in the realm"}
+    ID -- no --> DUMMY
+    ID -- yes --> CRED{"password credential stored"}
+    CRED -- no --> DUMMY
+    CRED -- yes --> VERIFY{"password matches the stored hash"}
+    DUMMY --> MISMATCH(["credential.ErrMismatch"])
+    VERIFY -- no --> MISMATCH
+    VERIFY -- yes --> STATUS{"identity active"}
+    STATUS -- no --> DISABLED(["identity.ErrDisabled"])
+    STATUS -- yes --> WRITE["mark used, re-hash if the parameters moved, write"]
+    WRITE --> OK(["the identity and must_change"])
+```
+
+An unknown login, an identity with no password and a wrong password are one
+error, and each costs one hash computation: where there is no stored hash to
+compare against, a dummy is verified instead. Returning early in the first two
+cases would answer in a millisecond what a wrong password answers in tens, and
+the response time would say which logins exist as plainly as a distinct error
+would. The dummy is produced once per process by the same hasher rather than
+written into the source, so it always carries the cost real hashes are produced
+with and cannot fall behind when the parameters change.
+
+A disabled identity is reported only after the password is proven. Asked
+first, the status would tell anyone holding a list of addresses which ones
+exist and are disabled; asked last, it is told only to whoever already knows
+the password.
+
+A successful verification records `last_used_at`, and the re-hash when one is
+due, in a write that applies only while the stored hash is still the one that
+was verified. Between the read and that write there is a hash computation, and
+a password replaced in that window would otherwise be overwritten by the row
+the verification read — the old hash put back over the new one, silently. When
+the condition fails the replacement wins and the verification still succeeds:
+the password presented was the right one when it was checked.
+
+### What is deliberately not here
+
+No session and no token: proving a password returns the identity and whether
+its password must be changed, and what a caller does with that is the next
+slice. No realm status check either — `VerifyPassword` takes a realm id, and
+whether a disabled realm may authenticate belongs to the point that resolves a
+realm for authentication, the way `RealmService.Resolve` owns that rule for the
+protocol endpoints. No password policy, beyond refusing the empty string and
+the 1024 byte bound. Nothing seeded at boot, and no bootstrap of the first
+administrator: an installation has no identity until someone creates one.
+
+One limit is worth stating before it is met. At 64 MiB per verification,
+concurrent logins multiply memory, and nothing bounds how many run at once.
+That is harmless while the only caller is an operator at a terminal and becomes
+a real question the day an HTTP login endpoint exists, where the number of
+simultaneous verifications is chosen by whoever is sending requests.
+
+### `aegisd identity`
+
+`aegisd identity` is how an identity exists at all for now: `create`,
+`set-password`, `list`, `disable` and `enable`, against a realm named by its
+slug, with no server running. It builds its services through the same
+constructor the server uses, so a password set from the command line is hashed
+with the parameters the server will verify against.
+
+The password never comes from the command line. An argument sits in `ps` for
+as long as the process runs and in the shell history for much longer, so it is
+read from `AEGIS_IDENTITY_PASSWORD`, or from the file
+`AEGIS_IDENTITY_PASSWORD_FILE` names — the same two forms, with the same
+refusal to pick a winner when both are set, as the master key. `create` without
+either leaves the identity with no credential, unable to authenticate until
+`set-password` gives it one. `--temporary` sets `must_change` on the credential:
+the password is good for one login and has to be replaced at it, which is what
+an administrator handing out a first password means. It describes a password,
+so passing it with none supplied is a usage error rather than a flag silently
+ignored.
+
+Like every other invocation it needs the master key, though it seals nothing:
+configuration is validated whole before the dispatch picks what to run, and no
+configuration validates without one. It also needs the realm to exist, and the
+`master` realm is seeded by the server's boot and not by `aegisd migrate` — so
+against a database that has only been migrated, it reports that there is no
+such realm. An archived realm is refused; a disabled one is not, since
+disabling a realm is not a reason to stop administering it.
+
 ## Startup
 
 `main` parses nothing and holds the single exit point. Everything else lives in
@@ -385,10 +581,13 @@ is enabled — and then verifies the schema version regardless of whether a
 migration ran: the check is not conditional on it, because an operator who
 forgot `aegisd migrate` with migration on boot disabled would otherwise serve
 requests until the first query touched a missing column. `setServices` builds
-the store, the key service and the realm service, and then seeds the master
-realm; it is a step of its own, separate from `setSchema`, because the seed
-needs services something has to own — built as locals instead, the admin API
-would end up constructing a second set that is not the application's.
+the store, the key service, the realm service and the identity and credential
+services, and then seeds the master realm; it is a step of its own, separate
+from `setSchema`, because the seed needs services something has to own — built
+as locals instead, the admin API would end up constructing a second set that is
+not the application's. Nothing is seeded for the last two: the boot creates no
+identity and no credential, in any profile, and no request reaches either
+service yet — they are held for the surfaces that will.
 
 ```mermaid
 flowchart TD

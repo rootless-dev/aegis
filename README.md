@@ -8,9 +8,10 @@ owns it, so the same email address may be two different people in two different
 realms.
 
 > **Status: early.** Realms exist: the schema is migrated on boot or by
-> `aegisd migrate`, and a `master` realm is seeded. Nothing identifies anyone
-> yet — no users, no credentials, no token issuance. See the
-> [roadmap](docs/roadmap.md).
+> `aegisd migrate`, and a `master` realm is seeded with its signing keys.
+> Identities and password credentials exist too, created and operated with
+> `aegisd identity`. Nothing authenticates anyone over HTTP yet — no login, no
+> session, no token issuance. See the [roadmap](docs/roadmap.md).
 
 ## Requirements
 

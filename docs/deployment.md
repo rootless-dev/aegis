@@ -171,7 +171,12 @@ failing until the secret is mounted into that init container or pipeline step
 as well. It does not need the key to do its work; it needs it because the
 process it runs in refuses to be misconfigured — and the alternative, a
 migration applied by a binary that could not have booted, is worse than the
-inconvenience.
+inconvenience. `aegisd identity` is under the same rule: creating a user or
+setting a password seals nothing, and still runs only where the master key is
+present. The password it sets comes from `AEGIS_IDENTITY_PASSWORD` or, better
+where a secret can be mounted, from the file `AEGIS_IDENTITY_PASSWORD_FILE`
+names — never from the command line, where it would show in `ps` and in the
+pod's recorded command.
 
 ### Backups
 
