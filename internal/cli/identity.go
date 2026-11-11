@@ -208,9 +208,17 @@ type realmScope struct {
 	sessions    *service.SessionService
 }
 
-// withRealm owns what every verb repeats: the services, the realm lookup and
-// the exit code. apply returns an error already worded for an operator.
-func withRealm(cfg *configs.Application, slug string, apply func(context.Context, realmScope) error) int {
+type services struct {
+	realms      *service.RealmService
+	identities  *service.IdentityService
+	credentials *service.CredentialService
+	sessions    *service.SessionService
+	admins      *service.AdminService
+}
+
+// withServices owns what every verb repeats: the services and the exit code.
+// apply returns an error already worded for an operator.
+func withServices(cfg *configs.Application, apply func(context.Context, services) error) int {
 	// The realm service cannot be built without the key service, hence the
 	// sealer. It costs nothing: no configuration validates without a master key.
 	realms, keys, db, err := keyServices(cfg)
@@ -223,25 +231,35 @@ func withRealm(cfg *configs.Application, slug string, apply func(context.Context
 	store := repository.NewStore(db.Gorm)
 	identities, credentials := application.NewIdentityServices(store)
 
-	ctx := context.Background()
-
-	found, err := realms.Resolve(ctx, slug)
-	if err != nil {
-		return fail(identityError(slug, "", err))
-	}
-
-	scope := realmScope{
-		realm:       found,
+	built := services{
+		realms:      realms,
 		identities:  identities,
 		credentials: credentials,
 		sessions:    service.NewSessionService(store, credentials, keys),
+		admins:      service.NewAdminService(store, identities, credentials),
 	}
 
-	if err := apply(ctx, scope); err != nil {
+	if err := apply(context.Background(), built); err != nil {
 		return fail(err)
 	}
 
 	return 0
+}
+
+func withRealm(cfg *configs.Application, slug string, apply func(context.Context, realmScope) error) int {
+	return withServices(cfg, func(ctx context.Context, in services) error {
+		found, err := in.realms.Resolve(ctx, slug)
+		if err != nil {
+			return identityError(slug, "", err)
+		}
+
+		return apply(ctx, realmScope{
+			realm:       found,
+			identities:  in.identities,
+			credentials: in.credentials,
+			sessions:    in.sessions,
+		})
+	})
 }
 
 func withIdentities(
@@ -285,7 +303,7 @@ func runIdentityCreate(
 				slug, created.Email(),
 			)
 		case temporary:
-			fmt.Println("  password: set, temporary: it has to be changed at the next login")
+			fmt.Println("  password: set, temporary: marked for replacement")
 		default:
 			fmt.Println("  password: set")
 		}
@@ -309,7 +327,7 @@ func runIdentitySetPassword(cfg *configs.Application, slug, login, password stri
 		}
 
 		if temporary {
-			fmt.Printf("password of %s in realm %s is set; it has to be changed at the next login\n", login, slug)
+			fmt.Printf("password of %s in realm %s is set, temporary: marked for replacement\n", login, slug)
 
 			return nil
 		}

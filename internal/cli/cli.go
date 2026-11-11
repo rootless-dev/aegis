@@ -42,6 +42,14 @@ func Dispatch(args []string) (handled bool, remaining []string, run Runner, usag
 		remaining, run, usageErr := dispatchSession(args[1:])
 
 		return true, remaining, run, usageErr
+	case "admin":
+		remaining, run, usageErr := dispatchAdmin(args[1:])
+
+		return true, remaining, run, usageErr
+	case "bootstrap-admin":
+		remaining, run, usageErr := withoutStrayTokens(args[1:], runBootstrapAdmin, bootstrapAdmin)
+
+		return true, remaining, run, usageErr
 	default:
 		return true, nil, nil, fmt.Errorf("aegisd: unknown command %q\n\n%s", args[0], usage)
 	}
@@ -69,10 +77,20 @@ const usage = `Usage:
   aegisd session revoke <realm> <session-id> [flags]   end one session
   aegisd session revoke-all <realm> <login> [flags]    end every live session of an identity
 
+  aegisd bootstrap-admin [flags]   create the administrator named in the bootstrap configuration, or reset its password
+
+  aegisd admin list [flags]                     list who administers what
+  aegisd admin grant <login> [realm] [flags]    grant administration of everything, or of one realm
+  aegisd admin revoke <login> [realm] [flags]   take it back
+
 A login is an email or a username. A password is never an argument: it is read
 from AEGIS_IDENTITY_PASSWORD, or from the file AEGIS_IDENTITY_PASSWORD_FILE names.
 Without one, create leaves the identity with no password. --temporary makes the
-password one that has to be changed at the next login.
+password as one to be replaced; nothing forces the change yet.
+
+bootstrap-admin reads AEGIS_BOOTSTRAP_ADMIN_EMAIL and AEGIS_BOOTSTRAP_ADMIN_PASSWORD
+(or AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE), like the server. The admin verbs take a
+login of the master realm, the only one whose identities administer.
 
 The subcommand must come first; flags follow it.
 `
