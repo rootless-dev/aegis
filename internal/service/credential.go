@@ -60,21 +60,27 @@ func (s *CredentialService) SetPassword(
 			return findErr
 		}
 
-		existing, findErr := tx.Credentials().Find(ctx, realmID, identityID, credential.TypePassword)
-		if errors.Is(findErr, credential.ErrNotFound) {
-			return s.persist(ctx, tx, prepared)
-		}
-
-		if findErr != nil {
-			return findErr
-		}
-
-		if replaceErr := existing.Replace(prepared.Hash(), mustChange); replaceErr != nil {
-			return replaceErr
-		}
-
-		return tx.Credentials().Update(ctx, existing)
+		return s.replace(ctx, tx, prepared)
 	})
+}
+
+// replace writes a prepared password over the one the identity has, or as its
+// first, inside a transaction the caller owns.
+func (s *CredentialService) replace(ctx context.Context, tx Store, prepared *credential.Credential) error {
+	existing, err := tx.Credentials().Find(ctx, prepared.RealmID(), prepared.IdentityID(), credential.TypePassword)
+	if errors.Is(err, credential.ErrNotFound) {
+		return s.persist(ctx, tx, prepared)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if err := existing.Replace(prepared.Hash(), prepared.MustChange()); err != nil {
+		return err
+	}
+
+	return tx.Credentials().Update(ctx, existing)
 }
 
 // VerifyPassword answers "is this the password of that login in this realm".

@@ -104,6 +104,7 @@ type fakeStore struct {
 	credentials   *fakeCredentials
 	sessions      *fakeSessions
 	refreshTokens *fakeRefreshTokens
+	adminGrants   *fakeAdminGrants
 	tx            *txProbe
 }
 
@@ -113,6 +114,7 @@ func (s fakeStore) Identities() service.IdentityRepository        { return s.ide
 func (s fakeStore) Credentials() service.CredentialRepository     { return s.credentials }
 func (s fakeStore) Sessions() service.SessionRepository           { return s.sessions }
 func (s fakeStore) RefreshTokens() service.RefreshTokenRepository { return s.refreshTokens }
+func (s fakeStore) AdminGrants() service.AdminGrantRepository     { return s.adminGrants }
 
 // Rolls back everything but realms and keys: those two hand out the pointers
 // they store, so there is no earlier state left to return to.
@@ -124,6 +126,7 @@ func (s fakeStore) InTx(ctx context.Context, fn func(service.Store) error) error
 	rollbackCredentials := s.credentials.snapshot()
 	rollbackSessions := s.sessions.snapshot()
 	rollbackRefreshTokens := s.refreshTokens.snapshot()
+	rollbackAdminGrants := s.adminGrants.snapshot()
 
 	err := fn(s)
 	if err != nil {
@@ -131,17 +134,22 @@ func (s fakeStore) InTx(ctx context.Context, fn func(service.Store) error) error
 		rollbackCredentials()
 		rollbackSessions()
 		rollbackRefreshTokens()
+		rollbackAdminGrants()
 	}
 
 	return err
 }
 
 // txProbe lets a fake outside the store ask whether a transaction is open.
-type txProbe struct{ open bool }
+type txProbe struct {
+	open    bool
+	entered int
+}
 
 func (p *txProbe) enter() {
 	if p != nil {
 		p.open = true
+		p.entered++
 	}
 }
 

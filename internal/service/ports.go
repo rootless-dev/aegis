@@ -59,5 +59,6 @@ type Store interface {
 	Credentials() CredentialRepository
 	Sessions() SessionRepository
 	RefreshTokens() RefreshTokenRepository
+	AdminGrants() AdminGrantRepository
 	InTx(ctx context.Context, fn func(Store) error) error
 }
