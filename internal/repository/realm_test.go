@@ -21,10 +21,21 @@ import (
 func newStore(t *testing.T) service.Store {
 	t.Helper()
 
-	// The transaction settings mirror database.Open: a store built on looser
-	// terms than the running system would prove nothing about it.
+	_, store := newStoreAndDB(t)
+
+	return store
+}
+
+// newStoreAndDB also hands out the *gorm.DB, for the tests that read or delete
+// a row around the repository.
+func newStoreAndDB(t *testing.T) (*gorm.DB, service.Store) {
+	t.Helper()
+
+	// The transaction settings and the foreign_keys pragma mirror
+	// database.Open: a store built on looser terms than the running system
+	// would prove nothing about it. SQLite enforces no foreign key without it.
 	db, err := gorm.Open(
-		gormlite.Open("file:"+filepath.Join(t.TempDir(), "aegis.db")),
+		gormlite.Open("file:"+filepath.Join(t.TempDir(), "aegis.db")+"?_pragma=foreign_keys(1)"),
 		&gorm.Config{SkipDefaultTransaction: true, DisableNestedTransaction: true},
 	)
 	if err != nil {
@@ -64,7 +75,7 @@ func newStore(t *testing.T) service.Store {
 		}
 	}
 
-	return repository.NewStore(db)
+	return db, repository.NewStore(db)
 }
 
 func makeRealm(t *testing.T, slug string) *realm.Realm {
