@@ -240,7 +240,7 @@ func TestSetPasswordGivesThenReplacesThePassword(t *testing.T) {
 
 	// By username, and with the flag after the arguments.
 	output := identityCommand(t, withPasswordEnv(env, identityPassword), "set-password", "master", "ana", "--temporary")
-	if !strings.Contains(output, "changed at the next login") {
+	if !strings.Contains(output, "marked for replacement") {
 		t.Errorf("want the output to say the password is temporary, got:\n%s", output)
 	}
 
