@@ -57,5 +57,7 @@ type Store interface {
 	Keys() RealmKeyRepository
 	Identities() IdentityRepository
 	Credentials() CredentialRepository
+	Sessions() SessionRepository
+	RefreshTokens() RefreshTokenRepository
 	InTx(ctx context.Context, fn func(Store) error) error
 }

@@ -80,7 +80,7 @@ func (f *fakeRepo) Reissue(_ context.Context, id uuid.UUID, issuer string) error
 	// the way the real repository does: through the rehydration door.
 	rebuilt, err := realm.Rehydrate(
 		stored.ID(), stored.Slug(), stored.DisplayName(), issuer,
-		stored.Status(), stored.CreatedAt(), stored.UpdatedAt(),
+		stored.Status(), stored.Settings(), stored.CreatedAt(), stored.UpdatedAt(),
 	)
 	if err != nil {
 		return err
@@ -100,29 +100,37 @@ type fakeStore struct {
 	keys *fakeKeys
 
 	// Nil in the suites that never reach them, the probe included.
-	identities  *fakeIdentities
-	credentials *fakeCredentials
-	tx          *txProbe
+	identities    *fakeIdentities
+	credentials   *fakeCredentials
+	sessions      *fakeSessions
+	refreshTokens *fakeRefreshTokens
+	tx            *txProbe
 }
 
-func (s fakeStore) Realms() service.RealmRepository           { return s.repo }
-func (s fakeStore) Keys() service.RealmKeyRepository          { return s.keys }
-func (s fakeStore) Identities() service.IdentityRepository    { return s.identities }
-func (s fakeStore) Credentials() service.CredentialRepository { return s.credentials }
+func (s fakeStore) Realms() service.RealmRepository               { return s.repo }
+func (s fakeStore) Keys() service.RealmKeyRepository              { return s.keys }
+func (s fakeStore) Identities() service.IdentityRepository        { return s.identities }
+func (s fakeStore) Credentials() service.CredentialRepository     { return s.credentials }
+func (s fakeStore) Sessions() service.SessionRepository           { return s.sessions }
+func (s fakeStore) RefreshTokens() service.RefreshTokenRepository { return s.refreshTokens }
 
-// Rolls back identities and credentials only: realms and keys hand out the
-// pointers they store, so there is no earlier state left to return to.
+// Rolls back everything but realms and keys: those two hand out the pointers
+// they store, so there is no earlier state left to return to.
 func (s fakeStore) InTx(ctx context.Context, fn func(service.Store) error) error {
 	s.tx.enter()
 	defer s.tx.leave()
 
 	rollbackIdentities := s.identities.snapshot()
 	rollbackCredentials := s.credentials.snapshot()
+	rollbackSessions := s.sessions.snapshot()
+	rollbackRefreshTokens := s.refreshTokens.snapshot()
 
 	err := fn(s)
 	if err != nil {
 		rollbackIdentities()
 		rollbackCredentials()
+		rollbackSessions()
+		rollbackRefreshTokens()
 	}
 
 	return err
@@ -136,6 +144,8 @@ func (p *txProbe) enter() {
 		p.open = true
 	}
 }
+
+func (p *txProbe) isOpen() bool { return p != nil && p.open }
 
 func (p *txProbe) leave() {
 	if p != nil {
@@ -161,7 +171,9 @@ func newService(t *testing.T) (*service.RealmService, *fakeRepo) {
 
 	repo := newFakeRepo()
 
-	return realmServiceWith(t, &fakeStore{repo: repo, keys: newFakeKeys()}, base), repo
+	store := &fakeStore{repo: repo, keys: newFakeKeys(), sessions: newFakeSessions()}
+
+	return realmServiceWith(t, store, base), repo
 }
 
 func TestCreateRefusesEveryReservedSlug(t *testing.T) {
@@ -297,7 +309,7 @@ func racing(t *testing.T, base, storedIssuer string, collision error) (*service.
 	// from what this base derives, and the aggregate has no issuer setter.
 	stored, err := realm.Rehydrate(
 		seeded.ID(), seeded.Slug(), seeded.DisplayName(), storedIssuer,
-		seeded.Status(), seeded.CreatedAt(), seeded.UpdatedAt(),
+		seeded.Status(), seeded.Settings(), seeded.CreatedAt(), seeded.UpdatedAt(),
 	)
 	if err != nil {
 		t.Fatalf("rehydrating: %v", err)
@@ -461,6 +473,56 @@ func TestEnsureMasterLeavesTheStatusAlone(t *testing.T) {
 
 	if r.Status() != realm.StatusDisabled {
 		t.Error("the seed must not re-enable a realm an operator disabled")
+	}
+}
+
+func TestEnsureMasterCreatesTheMasterRealmWithThePasswordGrantOn(t *testing.T) {
+	svc, repo := newService(t)
+
+	r, err := svc.EnsureMaster(t.Context(), false)
+	if err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	want := realm.DefaultSettings()
+	want.PasswordGrant = true
+
+	if r.Settings() != want || repo.bySlug["master"].Settings() != want {
+		t.Errorf("want %+v returned and stored, got %+v and %+v", want, r.Settings(), repo.bySlug["master"].Settings())
+	}
+}
+
+func TestEnsureMasterLeavesADisabledPasswordGrantOff(t *testing.T) {
+	for _, development := range []bool{false, true} {
+		svc, repo := newService(t)
+
+		if _, err := svc.EnsureMaster(t.Context(), development); err != nil {
+			t.Fatalf("seeding: %v", err)
+		}
+
+		repo.bySlug["master"].SetPasswordGrant(false)
+
+		r, err := svc.EnsureMaster(t.Context(), development)
+		if err != nil {
+			t.Fatalf("seeding again: %v", err)
+		}
+
+		if r.Settings().PasswordGrant || repo.bySlug["master"].Settings().PasswordGrant {
+			t.Errorf("development=%v: the seed must not turn the grant back on", development)
+		}
+	}
+}
+
+func TestCreateLeavesThePasswordGrantOff(t *testing.T) {
+	svc, repo := newService(t)
+
+	r, err := svc.Create(t.Context(), "acme", "Acme Inc")
+	if err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	if r.Settings() != realm.DefaultSettings() || repo.bySlug["acme"].Settings() != realm.DefaultSettings() {
+		t.Errorf("want the defaults with the grant off, got %+v", r.Settings())
 	}
 }
 
@@ -691,7 +753,7 @@ func newRealmService(t *testing.T) (*service.RealmService, *fakeStore) {
 		t.Fatalf("parsing the base url: %v", err)
 	}
 
-	store := &fakeStore{repo: newFakeRepo(), keys: newFakeKeys()}
+	store := &fakeStore{repo: newFakeRepo(), keys: newFakeKeys(), sessions: newFakeSessions()}
 
 	return realmServiceWith(t, store, base), store
 }
