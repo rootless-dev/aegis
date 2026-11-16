@@ -189,6 +189,23 @@ banner:
   # entries: the startup art is not JSON.
   enabled: true
 
+# The first administrator, created at boot in the master realm. Only acted on
+# while that realm has no administrator able to sign in: after that the values
+# are ignored, so this is not a way to reset a password, and an installation
+# that already has an administrator sets none of it. The password is created
+# temporary: nothing forces the change yet, and the boot warns until
+# `aegisd identity set-password` replaces it.
+#
+# The password is deliberately not a key here. Writing it fails the boot;
+# AEGIS_BOOTSTRAP_ADMIN_PASSWORD, or AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE, are
+# the only routes, and one of them is required once an email is set — which is
+# why the section ships commented out.
+# bootstrap:
+#   admin:
+#     email: admin@example.com
+#     # Optional: a second name to sign in with. No "@" in it.
+#     username: admin
+
 # There is no crypto section here. The master key that encrypts every realm's
 # signing key cannot be read from this file, because a secret that can live in
 # a configuration file eventually gets committed. AEGIS_CRYPTO_MASTER_KEY, or

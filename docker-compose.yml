@@ -44,6 +44,12 @@ services:
       # master key that ships with the product is a decryption key every
       # installation shares. `make master-key` writes one.
       AEGIS_CRYPTO_MASTER_KEY: ${AEGIS_CRYPTO_MASTER_KEY:?run `make master-key` first}
+      # The first administrator, created on the first boot against an empty
+      # database and ignored from then on. A literal is fine here, unlike the
+      # master key: the password is created marked for replacement, and the boot
+      # warns until `aegisd identity set-password` gives the account a real one.
+      AEGIS_BOOTSTRAP_ADMIN_EMAIL: admin@aegis.localhost
+      AEGIS_BOOTSTRAP_ADMIN_PASSWORD: change-me-on-first-login
     depends_on:
       postgres:
         condition: service_healthy

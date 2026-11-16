@@ -33,6 +33,7 @@ type Application struct {
 	HSTS       *HSTS       `yaml:"hsts"`
 	CSP        *CSP        `yaml:"csp"`
 	Database   *Database   `yaml:"database"`
+	Bootstrap  Bootstrap   `yaml:"bootstrap"`
 
 	// Out of YAML, like the database password: a `crypto:` key in the file
 	// fails the boot.
@@ -125,6 +126,7 @@ func (cfg *Application) sections() []section {
 		{"hsts", cfg.HSTS == nil, func() error { return cfg.HSTS.Validate() }},
 		{"csp", cfg.CSP == nil, func() error { return cfg.CSP.Validate() }},
 		{"database", cfg.Database == nil, func() error { return cfg.Database.Validate(cfg.Profile) }},
+		{"bootstrap", false, func() error { return cfg.Bootstrap.Validate() }},
 		{"crypto", cfg.Crypto == nil, func() error { return cfg.Crypto.Validate() }},
 	}
 }

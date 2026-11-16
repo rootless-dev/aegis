@@ -27,6 +27,12 @@ secretGenerator:
   - name: aegis-crypto
     literals:
       - master-key=ZGV2ZWxvcG1lbnQtb25seS1jbHVzdGVyLWtleS0zMmI=
+  # The first administrator's password, created marked for replacement. The
+  # email is a plain value in the patch instead: as a Secret value, Tilt would
+  # redact it from the log line that says who was created.
+  - name: aegis-bootstrap-admin
+    literals:
+      - password=change-me-on-first-login
 
 generatorOptions:
   disableNameSuffixHash: true

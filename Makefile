@@ -74,6 +74,19 @@ master-key: ## Write a master key into .env, unless one is already there
 		echo "wrote a new AEGIS_CRYPTO_MASTER_KEY into .env"; \
 	fi
 
+# The values compose and the Tilt overlay carry, so the three environments
+# sign in with the same administrator.
+.PHONY: bootstrap-admin
+bootstrap-admin: ## Write development administrator credentials into .env, unless they are already there
+	@if grep -qs '^AEGIS_BOOTSTRAP_ADMIN_' .env; then \
+		echo ".env already carries bootstrap administrator settings; delete the lines to replace them"; \
+	else \
+		[ -s .env ] && [ -n "$$(tail -c 1 .env)" ] && echo "" >> .env; \
+		printf 'AEGIS_BOOTSTRAP_ADMIN_EMAIL=%s\n' 'admin@aegis.localhost' >> .env; \
+		printf 'AEGIS_BOOTSTRAP_ADMIN_PASSWORD=%s\n' 'change-me-on-first-login' >> .env; \
+		echo "wrote AEGIS_BOOTSTRAP_ADMIN_EMAIL and AEGIS_BOOTSTRAP_ADMIN_PASSWORD into .env"; \
+	fi
+
 .PHONY: assets
 assets: $(TAILWIND_BIN) ## Generate the stylesheet
 	@mkdir -p $(dir $(TAILWIND_OUTPUT))

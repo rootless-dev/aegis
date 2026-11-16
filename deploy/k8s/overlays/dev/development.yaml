@@ -63,3 +63,10 @@ spec:
               value: disable
             - name: AEGIS_DATABASE_SSL_ROOT_CERT
               value: ""
+
+            # AEGIS_BOOTSTRAP_ADMIN_PASSWORD is left to the base, like the
+            # database password. The null drops the base's secretKeyRef, which
+            # cannot sit next to a plain value.
+            - name: AEGIS_BOOTSTRAP_ADMIN_EMAIL
+              value: admin@aegis.localhost
+              valueFrom: null

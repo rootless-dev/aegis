@@ -14,6 +14,7 @@ var (
 	ErrDisplayNameInvalid = errors.New("realm: display name is empty")
 	ErrStatusInvalid      = errors.New("realm: status is not one of active, disabled, archived")
 	ErrIDInvalid          = errors.New("realm: identifier is empty")
+	ErrSettingsInvalid    = errors.New("realm: settings are not valid")
 )
 
 // ErrNotAvailable is a realm that exists and is not reachable as a protocol

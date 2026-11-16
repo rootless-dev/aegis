@@ -3,8 +3,10 @@
 // The repository against a real server, selected by AEGIS_TEST_DRIVER. Only
 // what a real server can show; realm_test.go covers the rest against SQLite.
 //
-// makeRealm comes from realm_test.go, and seedRealm and makeKey from
-// key_test.go; neither file carries a build constraint.
+// makeRealm comes from realm_test.go, seedRealm and makeKey from key_test.go,
+// and the identity, credential, session and refresh token helpers from
+// identity_test.go, credential_test.go, session_test.go and
+// refresh_token_test.go; none of those files carries a build constraint.
 package repository_test
 
 import (
@@ -19,6 +21,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/network"
+	"github.com/rootless-dev/aegis/internal/domain/credential"
+	"github.com/rootless-dev/aegis/internal/domain/identity"
 	"github.com/rootless-dev/aegis/internal/domain/key"
 	"github.com/rootless-dev/aegis/internal/domain/realm"
 	"github.com/rootless-dev/aegis/internal/infra/database"
@@ -379,6 +383,27 @@ func TestTimestampRoundTripsAtMicrosecondPrecisionInUTC(t *testing.T) {
 	}
 }
 
+// password_grant is boolean on Postgres and an integer elsewhere, and the three
+// TTLs are the first integer columns a record maps. The bodies live in
+// realm_test.go.
+func TestIntegrationRealmSettingsRoundTrip(t *testing.T) {
+	db, store := openEngine(t)
+
+	assertSettingsRoundTrip(t, db.Gorm, store)
+}
+
+func TestIntegrationUpdateWritesThePasswordGrantAndNotTheTTLsOrTheIssuer(t *testing.T) {
+	db, store := openEngine(t)
+
+	assertUpdateWritesThePasswordGrantAndNothingElseNew(t, db.Gorm, store)
+}
+
+func TestIntegrationARealmRowWithoutTheSettingsReadsBackWithTheDefaults(t *testing.T) {
+	db, store := openEngine(t)
+
+	assertARowWithoutTheSettingsReadsBackWithTheDefaults(t, db.Gorm, store)
+}
+
 func TestInTxRollsBackBothWritesOnFailure(t *testing.T) {
 	_, store := openEngine(t)
 	ctx := context.Background()
@@ -587,6 +612,328 @@ func TestIntegrationCascadesKeysWithTheRealm(t *testing.T) {
 	}
 }
 
+func TestIntegrationTranslatesTheIdentityUniqueViolations(t *testing.T) {
+	_, store := openEngine(t)
+	ctx := context.Background()
+	realmID := seedRealm(t, store, "identity-unique")
+
+	seedIdentity(t, store, realmID, "ada@example.com", "ada")
+
+	sameEmail := makeIdentity(t, realmID, "ada@example.com", "other")
+	if err := store.Identities().Create(ctx, sameEmail); !errors.Is(err, identity.ErrEmailTaken) {
+		t.Errorf("want identity.ErrEmailTaken, got %v", err)
+	}
+
+	sameUsername := makeIdentity(t, realmID, "other@example.com", "ada")
+	if err := store.Identities().Create(ctx, sameUsername); !errors.Is(err, identity.ErrUsernameTaken) {
+		t.Errorf("want identity.ErrUsernameTaken, got %v", err)
+	}
+
+	// MySQL and MariaDB quote the duplicate value in the message, and this one
+	// is a valid username.
+	seedIdentity(t, store, realmID, "first@example.com", "uq_identities_email")
+
+	spelled := makeIdentity(t, realmID, "second@example.com", "uq_identities_email")
+	if err := store.Identities().Create(ctx, spelled); !errors.Is(err, identity.ErrUsernameTaken) {
+		t.Errorf("a username spelling a constraint name: want identity.ErrUsernameTaken, got %v", err)
+	}
+}
+
+// uq_identities_username rests on NULLs not colliding, as active_marker does.
+func TestIntegrationAllowsManyIdentitiesWithoutAUsername(t *testing.T) {
+	db, store := openEngine(t)
+	ctx := context.Background()
+	realmID := seedRealm(t, store, "no-username")
+
+	for _, email := range []string{"ada@example.com", "grace@example.com"} {
+		seedIdentity(t, store, realmID, email, "")
+	}
+
+	var stored int64
+
+	err := db.Gorm.Raw(
+		"SELECT COUNT(*) FROM identities WHERE realm_id = ? AND username IS NULL", realmID.String(),
+	).Scan(&stored).Error
+	if err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+
+	if stored != 2 {
+		t.Errorf("want 2 rows with a NULL username, got %d", stored)
+	}
+
+	got, err := store.Identities().FindByEmail(ctx, realmID, "ada@example.com")
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+
+	if got.HasUsername() {
+		t.Errorf("want no username, got %q", got.Username())
+	}
+}
+
+func TestIntegrationRefusesASecondCredentialOfTheSameType(t *testing.T) {
+	_, store := openEngine(t)
+	ctx := context.Background()
+	realmID := seedRealm(t, store, "credential-twice")
+	owner := seedIdentity(t, store, realmID, "ada@example.com", "")
+
+	if err := store.Credentials().Create(ctx, makeCredential(t, owner, false)); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	err := store.Credentials().Create(ctx, makeCredential(t, owner, false))
+	if !errors.Is(err, credential.ErrExists) {
+		t.Fatalf("want credential.ErrExists, got %v", err)
+	}
+}
+
+// must_change is boolean on Postgres and an integer elsewhere, and last_used_at
+// is the only nullable timestamp: both directions of each, on the wire.
+func TestIntegrationCredentialRoundTripsTheBooleanAndTheNullableTimestamp(t *testing.T) {
+	db, store := openEngine(t)
+	ctx := context.Background()
+	realmID := seedRealm(t, store, "credential-roundtrip")
+	owner := seedIdentity(t, store, realmID, "ada@example.com", "")
+
+	created := makeCredential(t, owner, true)
+	if err := store.Credentials().Create(ctx, created); err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	unused := func() int64 {
+		var count int64
+
+		err := db.Gorm.Raw(
+			"SELECT COUNT(*) FROM credentials WHERE id = ? AND last_used_at IS NULL", created.ID().String(),
+		).Scan(&count).Error
+		if err != nil {
+			t.Fatalf("counting: %v", err)
+		}
+
+		return count
+	}
+
+	got, err := store.Credentials().Find(ctx, realmID, owner.ID(), credential.TypePassword)
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+
+	if !got.MustChange() || got.LastUsedAt() != nil || unused() != 1 {
+		t.Errorf("want must_change with a NULL last use, got %v and %v", got.MustChange(), got.LastUsedAt())
+	}
+
+	if err := created.Replace(secondHash, false); err != nil {
+		t.Fatalf("replacing: %v", err)
+	}
+
+	lastUsedAt := time.Date(2026, 3, 4, 5, 6, 9, 987654000, time.UTC)
+
+	used, err := credential.Rehydrate(
+		created.ID(), realmID, owner.ID(), credential.TypePassword, secondHash, false, &lastUsedAt,
+		created.CreatedAt(), lastUsedAt,
+	)
+	if err != nil {
+		t.Fatalf("building: %v", err)
+	}
+
+	if err := store.Credentials().Update(ctx, used); err != nil {
+		t.Fatalf("updating: %v", err)
+	}
+
+	got, err = store.Credentials().Find(ctx, realmID, owner.ID(), credential.TypePassword)
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+
+	if got.MustChange() || got.Hash() != secondHash {
+		t.Errorf("want false and the second hash written, got %v and %q", got.MustChange(), got.Hash())
+	}
+
+	if got.LastUsedAt() == nil || !got.LastUsedAt().Equal(lastUsedAt) || got.LastUsedAt().Location() != time.UTC {
+		t.Errorf("last_used_at: want %s in UTC, got %v", lastUsedAt, got.LastUsedAt())
+	}
+
+	// Back to NULL: the aggregate never does it, Update still has to be able to.
+	cleared, err := credential.Rehydrate(
+		created.ID(), realmID, owner.ID(), credential.TypePassword, secondHash, false, nil,
+		created.CreatedAt(), lastUsedAt.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("building: %v", err)
+	}
+
+	if err := store.Credentials().Update(ctx, cleared); err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+
+	if unused() != 1 {
+		t.Error("want last_used_at written back to NULL")
+	}
+}
+
+func TestIntegrationCascadesIdentitiesAndCredentials(t *testing.T) {
+	db, store := openEngine(t)
+	ctx := context.Background()
+	realmID := seedRealm(t, store, "identity-cascade")
+
+	kept := seedIdentity(t, store, realmID, "ada@example.com", "")
+	removed := seedIdentity(t, store, realmID, "grace@example.com", "")
+
+	for _, owner := range []*identity.Identity{kept, removed} {
+		if err := store.Credentials().Create(ctx, makeCredential(t, owner, false)); err != nil {
+			t.Fatalf("seeding: %v", err)
+		}
+	}
+
+	if err := db.Gorm.Exec("DELETE FROM identities WHERE id = ?", removed.ID().String()).Error; err != nil {
+		t.Fatalf("deleting the identity: %v", err)
+	}
+
+	_, err := store.Credentials().Find(ctx, realmID, removed.ID(), credential.TypePassword)
+	if !errors.Is(err, credential.ErrNotFound) {
+		t.Errorf("want the credential gone with its identity, got %v", err)
+	}
+
+	if _, err := store.Credentials().Find(ctx, realmID, kept.ID(), credential.TypePassword); err != nil {
+		t.Errorf("the other identity's credential must survive: %v", err)
+	}
+
+	if err := db.Gorm.Exec("DELETE FROM realms WHERE id = ?", realmID.String()).Error; err != nil {
+		t.Fatalf("deleting the realm: %v", err)
+	}
+
+	if _, err := store.Identities().FindByID(ctx, realmID, kept.ID()); !errors.Is(err, identity.ErrNotFound) {
+		t.Errorf("want the identity gone with the realm, got %v", err)
+	}
+
+	_, err = store.Credentials().Find(ctx, realmID, kept.ID(), credential.TypePassword)
+	if !errors.Is(err, credential.ErrNotFound) {
+		t.Errorf("want the credential gone with the realm, got %v", err)
+	}
+}
+
+// The realm in the WHERE of every statement, against the engine's own uuid or
+// CHAR(36) comparison.
+func TestIntegrationScopesIdentitiesAndCredentialsToTheRealm(t *testing.T) {
+	_, store := openEngine(t)
+	ctx := context.Background()
+	home := seedRealm(t, store, "scope-home")
+	other := seedRealm(t, store, "scope-other")
+
+	owner := seedIdentity(t, store, home, "ada@example.com", "ada")
+
+	created := makeCredential(t, owner, false)
+	if err := store.Credentials().Create(ctx, created); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	if _, err := store.Identities().FindByID(ctx, other, owner.ID()); !errors.Is(err, identity.ErrNotFound) {
+		t.Errorf("identity by id: want identity.ErrNotFound, got %v", err)
+	}
+
+	_, err := store.Credentials().Find(ctx, other, owner.ID(), credential.TypePassword)
+	if !errors.Is(err, credential.ErrNotFound) {
+		t.Errorf("credential: want credential.ErrNotFound, got %v", err)
+	}
+
+	foreignIdentity, err := identity.Rehydrate(
+		owner.ID(), other, owner.Email(), owner.Username(), identity.StatusDisabled,
+		owner.CreatedAt(), owner.UpdatedAt().Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("building: %v", err)
+	}
+
+	if err := store.Identities().Update(ctx, foreignIdentity); !errors.Is(err, identity.ErrNotFound) {
+		t.Errorf("identity update: want identity.ErrNotFound, got %v", err)
+	}
+
+	foreignCredential, err := credential.Rehydrate(
+		created.ID(), other, owner.ID(), credential.TypePassword, secondHash, true, nil,
+		created.CreatedAt(), created.UpdatedAt().Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("building: %v", err)
+	}
+
+	if err := store.Credentials().Update(ctx, foreignCredential); !errors.Is(err, credential.ErrNotFound) {
+		t.Errorf("credential update: want credential.ErrNotFound, got %v", err)
+	}
+
+	got, err := store.Credentials().Find(ctx, home, owner.ID(), credential.TypePassword)
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+
+	if got.Hash() != firstHash {
+		t.Error("the credential in its own realm must be untouched")
+	}
+}
+
+// One engine for all of them: each assertion seeds realms of its own.
+func TestIntegrationSessionsAndRefreshTokens(t *testing.T) {
+	db, store := openEngine(t)
+
+	t.Run("a session round trips its nullable columns", func(t *testing.T) {
+		assertSessionRoundTrips(t, db.Gorm, store)
+	})
+
+	t.Run("a refresh token round trips its nullable columns", func(t *testing.T) {
+		assertRefreshTokenRoundTrips(t, db.Gorm, store)
+	})
+
+	t.Run("ending all counts only the live sessions of the scope", func(t *testing.T) {
+		assertEndAllCounts(t, store)
+	})
+
+	t.Run("a duplicate hash is refused", func(t *testing.T) {
+		assertDuplicateHashIsRefused(t, store)
+	})
+
+	t.Run("a concurrent consume has exactly one winner", func(t *testing.T) {
+		assertConcurrentConsumeHasOneWinner(t, store)
+	})
+
+	t.Run("a session takes its refresh tokens along", func(t *testing.T) {
+		assertASessionTakesItsRefreshTokensAlong(t, db.Gorm, store)
+	})
+
+	t.Run("a child outlives its parent token", func(t *testing.T) {
+		assertAChildOutlivesItsParentToken(t, db.Gorm, store)
+	})
+}
+
+// The text translate keys off, straight from the driver: the index name on the
+// servers, the column on SQLite.
+func TestIntegrationADuplicateTokenHashNamesWhatTranslateReads(t *testing.T) {
+	db, store := openEngine(t)
+	realmID := seedRealm(t, store, "hash-text")
+	owner := seedSession(t, store, seedIdentity(t, store, realmID, "ada@example.com", ""))
+	first := seedRefreshToken(t, store, owner, uuid.Nil)
+
+	err := db.Gorm.Exec(
+		"INSERT INTO refresh_tokens (id, realm_id, session_id, token_hash, created_at, expires_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?)",
+		newID(t).String(), realmID.String(), owner.ID().String(), first.Hash(),
+		repository.Timestamp(first.CreatedAt()), repository.Timestamp(first.ExpiresAt()),
+	).Error
+	if err == nil {
+		t.Fatal("want the unique index to refuse it, got no error")
+	}
+
+	t.Logf("driver text: %v", err)
+
+	want := "uq_refresh_tokens_hash"
+	if selectedDriver() == database.DriverSQLite {
+		want = "UNIQUE constraint failed: refresh_tokens.token_hash"
+	}
+
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("want the driver to name %q, got %v", want, err)
+	}
+}
+
 // Raw SQL: the repository cannot produce the row this CHECK refuses.
 func TestIntegrationRefusesAnActiveRowWithoutAMarker(t *testing.T) {
 	db, store := openEngine(t)
@@ -601,4 +948,43 @@ func TestIntegrationRefusesAnActiveRowWithoutAMarker(t *testing.T) {
 	if err == nil {
 		t.Fatal("want the check constraint to refuse it, got no error")
 	}
+}
+
+// One engine for all of them: each assertion seeds realms of its own.
+func TestIntegrationAdminGrants(t *testing.T) {
+	db, store := openEngine(t)
+
+	t.Run("both kinds round trip the target and the marker", func(t *testing.T) {
+		assertAdminGrantRoundTrips(t, db.Gorm, store)
+	})
+
+	t.Run("a duplicate of either kind is refused", func(t *testing.T) {
+		assertDuplicateGrantsAreRefused(t, store)
+	})
+
+	t.Run("a duplicate names what translate reads", func(t *testing.T) {
+		global, targeted := duplicateGrantTexts(t, db.Gorm, store)
+
+		wantGlobal, wantTargeted := "uq_admin_grants_global", "uq_admin_grants_target"
+		if selectedDriver() == database.DriverSQLite {
+			wantGlobal = "UNIQUE constraint failed: admin_grants.identity_id, admin_grants.global_marker"
+			wantTargeted = "UNIQUE constraint failed: admin_grants.identity_id, admin_grants.target_realm_id"
+		}
+
+		if !strings.Contains(global, wantGlobal) {
+			t.Errorf("global: want the driver to name %q, got %s", wantGlobal, global)
+		}
+
+		if !strings.Contains(targeted, wantTargeted) {
+			t.Errorf("target: want the driver to name %q, got %s", wantTargeted, targeted)
+		}
+	})
+
+	t.Run("a global administrator needs the grant, the password and an active identity", func(t *testing.T) {
+		assertHasGlobalAdministratorTruthTable(t, store)
+	})
+
+	t.Run("a target realm takes the grants over it along", func(t *testing.T) {
+		assertATargetRealmTakesItsGrantsAlong(t, db.Gorm, store)
+	})
 }

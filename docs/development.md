@@ -37,11 +37,13 @@ built from a generated certificate now lives only in the unit tests and in one
 integration test that opts in with `AEGIS_TLS_TERMINATION=app` — and in production,
 where a break would be found by a customer.
 
-This deserves revisiting when sessions arrive. A `Secure` cookie is not stored
-by the browser over plain HTTP, and the HSTS header is only sent over HTTPS, so
-neither would be exercised by the loop that is about to grow login forms. Either
-the default goes back to `app` then, or the session work runs against
-`AEGIS_TLS_TERMINATION=app` deliberately.
+Sessions have arrived without forcing the question: they are reached through
+the token endpoint, which sets no cookie. It deserves revisiting when the
+browser login does. A `Secure` cookie is not stored by the browser over plain
+HTTP, and the HSTS header is only sent over HTTPS, so neither would be
+exercised by the loop that is about to grow login forms. Either the default
+goes back to `app` then, or that work runs against `AEGIS_TLS_TERMINATION=app`
+deliberately.
 
 `make assets` generates `internal/templates/assets/css/app.css` with the
 Tailwind standalone CLI, downloaded and checksum-verified into `bin/` on first
@@ -195,6 +197,181 @@ changed port would otherwise leave a stale issuer with no symptom pointing at
 the cause. Production refuses to boot on the same disagreement instead: every
 client validates the issuer byte for byte, so serving two different ones
 silently is worse than not starting.
+
+## The administrator
+
+Each environment gets the same first administrator, `admin@aegis.localhost`
+with the password `change-me-on-first-login`, by a different road:
+
+| Environment | Where the credentials come from |
+| --- | --- |
+| `make run` | `.env`, once `make bootstrap-admin` has written them there |
+| `make dev` | literals in `docker-compose.yml` |
+| `make tilt` | the dev overlay: the email as a plain value, the password from the `aegis-bootstrap-admin` Secret it generates |
+
+```sh
+make bootstrap-admin   # writes the two variables into .env, unless some are already there
+make run               # the boot creates the administrator
+```
+
+Compose and Tilt need nothing: the administrator is created on the first boot
+against an empty database. `make run` is the one that asks for a step, because
+the binary has no development fallback for a credential, the same reason
+`make master-key` exists. In the cluster the email is a plain value and not a
+key of the Secret because Tilt redacts Secret values from the logs it shows,
+and that would blank the address out of the line saying who was created.
+
+The boot acts only while the master realm has no administrator able to sign
+in. After that the variables are ignored, and the log says so at `INFO`:
+editing the password in `.env` and restarting changes nothing.
+
+Sign in through the token endpoint, with the email as the login — no username
+is configured in any of the three:
+
+```sh
+curl -s http://localhost:7500/realms/master/protocol/openid-connect/token \
+  -d grant_type=password \
+  --data-urlencode username=admin@aegis.localhost \
+  -d password=change-me-on-first-login
+```
+
+The password is created temporary. Nothing forces its replacement yet, so the
+login works and the server warns about it instead: once at the token endpoint
+for each login, and on every boot with `this administrator's password is still
+the temporary one`. Replacing it is what silences both:
+
+```sh
+AEGIS_IDENTITY_PASSWORD=<a new one> \
+  go run ./cmd/aegisd identity set-password master admin@aegis.localhost --dev
+```
+
+`aegisd bootstrap-admin` is the reset, and unlike the boot it always acts: the
+identity holding the configured email becomes a global administrator with the
+configured password, temporary again, and its sessions are ended. It reads the
+same variables, so with `.env` in place it is:
+
+```sh
+go run ./cmd/aegisd bootstrap-admin --dev
+```
+
+It also seeds the master realm when no server has booted on the database yet,
+so it works straight after `aegisd migrate`. Do not confuse it with
+`make bootstrap-admin`, which only writes two lines into `.env`.
+
+Who administers what is `aegisd admin`:
+
+```sh
+aegisd admin list [flags]                     list who administers what
+aegisd admin grant <login> [realm] [flags]    grant administration of everything, or of one realm
+aegisd admin revoke <login> [realm] [flags]   take it back
+```
+
+```sh
+go run ./cmd/aegisd admin grant dev --dev           # dev administers every realm
+go run ./cmd/aegisd admin grant dev master --dev    # or only the realm named
+go run ./cmd/aegisd admin list --dev
+```
+
+`dev` there is the identity the [next section](#identities) creates. The login
+is an identity of the `master` realm, the only one whose identities
+administer. Without a realm the grant is global. Granting what is already held
+and revoking what is not both exit 1. Nothing reads these grants at runtime
+yet: there is no administration API, so a grant changes what `admin list`
+prints and what the authorization check will answer once something calls it.
+
+## Identities
+
+```sh
+aegisd identity create <realm> <email> [username] [--temporary] [flags]   create an identity
+aegisd identity set-password <realm> <login> [--temporary] [flags]        set or replace the password
+aegisd identity list <realm> [flags]                                      list a realm's identities
+aegisd identity disable <realm> <login> [flags]                           refuse authentication for the identity
+aegisd identity enable <realm> <login> [flags]                            allow it again
+```
+
+Beyond the administrator above nothing is seeded, so every other user of a
+development database is created here. A login is an email or a username. The password is never an argument — it
+would sit in `ps` and in the shell history — and is read from
+`AEGIS_IDENTITY_PASSWORD`, or from the file `AEGIS_IDENTITY_PASSWORD_FILE`
+names; setting both is an error.
+
+```sh
+make run   # once, and stop it: the first boot is what seeds the master realm
+AEGIS_IDENTITY_PASSWORD=devpassword \
+  go run ./cmd/aegisd identity create master dev@example.com dev --dev
+```
+
+That writes to the sqlite file `make run` uses. Against compose or Tilt, give
+the command the same `AEGIS_DATABASE_*` variables the service there runs with:
+it opens the database the way the server does, and like every subcommand it
+needs `AEGIS_CRYPTO_MASTER_KEY`, which `make master-key` writes into `.env`.
+
+- `create` without a password leaves the identity with no credential; it cannot
+  authenticate until `set-password` gives it one.
+- `--temporary` marks the password as one that has to be changed at the next
+  login. With no password supplied it is a usage error.
+- `disable` and `enable` change whether the identity may authenticate; neither
+  touches its credential.
+
+## Tokens
+
+With an identity in `master` and the server running, the token endpoint trades
+its password for a pair of tokens:
+
+```sh
+curl -s http://localhost:7500/realms/master/protocol/openid-connect/token \
+  -d grant_type=password -d username=dev -d password=devpassword
+```
+
+`username` takes an email as well; pass it with `--data-urlencode`. The answer
+carries `access_token`, `refresh_token`, `expires_in`, `refresh_expires_in` and
+`session_state`, which is the session's id. The access token is a JWT: its
+payload decodes with any JWT tool, and its signature verifies against
+`http://localhost:7500/realms/master/protocol/openid-connect/certs`.
+
+```sh
+curl -s http://localhost:7500/realms/master/protocol/openid-connect/token \
+  -d grant_type=refresh_token -d refresh_token=<refresh_token from the last answer>
+```
+
+Every refresh returns a new refresh token and consumes the one it was given.
+Presenting a consumed one again is read as theft and ends the session, so
+running that second command twice with the same value is the quickest way to
+watch reuse detection work — and to lose the session. Log in again to get
+another.
+
+Only `master` accepts the password grant; any other realm answers
+`unauthorized_client`. The parameters go in the body, as `-d` sends them: the
+endpoint does not read the query string. An access token lasts five minutes
+and a session thirty without a refresh, ten hours at most. Those are per-realm
+columns with no command or setting to change them yet.
+
+An identity created with `--temporary` still gets tokens here, and so does the
+bootstrapped administrator, with a warning in the server's log: there is no
+change-password flow yet.
+
+## Sessions
+
+```sh
+aegisd session list <realm> <login> [flags]          list an identity's sessions, newest first
+aegisd session revoke <realm> <session-id> [flags]   end one session
+aegisd session revoke-all <realm> <login> [flags]    end every live session of an identity
+```
+
+```sh
+go run ./cmd/aegisd session list master dev --dev
+```
+
+`list` shows each session as `live`, `expired`, or `ended:` followed by why —
+`revoked`, `reuse` or `realm_disabled`. The id `revoke` takes is the one in the
+first column, which is also the `session_state` of the token answer. Like
+`aegisd identity`, these open the database themselves and need no server
+running — and run just as well beside one, which is how the integration tests
+revoke a session and then watch its refresh fail.
+
+Revoking makes the session's next refresh fail. The access token already
+issued keeps verifying until it expires, because nothing checks it against the
+database — that is why it is short-lived.
 
 ## Tests
 

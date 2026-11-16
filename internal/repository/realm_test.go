@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/ncruces/go-sqlite3/gormlite"
@@ -21,10 +22,21 @@ import (
 func newStore(t *testing.T) service.Store {
 	t.Helper()
 
-	// The transaction settings mirror database.Open: a store built on looser
-	// terms than the running system would prove nothing about it.
+	_, store := newStoreAndDB(t)
+
+	return store
+}
+
+// newStoreAndDB also hands out the *gorm.DB, for the tests that read or delete
+// a row around the repository.
+func newStoreAndDB(t *testing.T) (*gorm.DB, service.Store) {
+	t.Helper()
+
+	// The transaction settings and the foreign_keys pragma mirror
+	// database.Open: a store built on looser terms than the running system
+	// would prove nothing about it. SQLite enforces no foreign key without it.
 	db, err := gorm.Open(
-		gormlite.Open("file:"+filepath.Join(t.TempDir(), "aegis.db")),
+		gormlite.Open("file:"+filepath.Join(t.TempDir(), "aegis.db")+"?_pragma=foreign_keys(1)"),
 		&gorm.Config{SkipDefaultTransaction: true, DisableNestedTransaction: true},
 	)
 	if err != nil {
@@ -64,7 +76,7 @@ func newStore(t *testing.T) service.Store {
 		}
 	}
 
-	return repository.NewStore(db)
+	return db, repository.NewStore(db)
 }
 
 func makeRealm(t *testing.T, slug string) *realm.Realm {
@@ -347,6 +359,208 @@ func TestUpdateLeavesTheImmutableColumnsAlone(t *testing.T) {
 
 	if !got.CreatedAt().Equal(created.CreatedAt()) {
 		t.Error("created_at must be untouched by Update")
+	}
+}
+
+// rawRealm is the row as the engine holds it, read around the repository.
+type rawRealm struct {
+	Issuer         string `gorm:"column:issuer"`
+	AccessTokenTTL int64  `gorm:"column:access_token_ttl"`
+	SessionIdleTTL int64  `gorm:"column:session_idle_ttl"`
+	SessionMaxTTL  int64  `gorm:"column:session_max_ttl"`
+	PasswordGrant  bool   `gorm:"column:password_grant"`
+}
+
+func readRawRealm(t *testing.T, db *gorm.DB, id uuid.UUID) rawRealm {
+	t.Helper()
+
+	var row rawRealm
+
+	err := db.Raw(
+		"SELECT issuer, access_token_ttl, session_idle_ttl, session_max_ttl, password_grant FROM realms WHERE id = ?",
+		id.String(),
+	).Scan(&row).Error
+	if err != nil {
+		t.Fatalf("reading the raw row: %v", err)
+	}
+
+	return row
+}
+
+// The assert* helpers below also run against the selected engine, from
+// integration_test.go.
+
+func assertSettingsRoundTrip(t *testing.T, db *gorm.DB, store service.Store) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	plain := makeRealm(t, "plain")
+	if err := store.Realms().Create(ctx, plain); err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	// Rehydrate is the only way to an aggregate whose TTLs are not the defaults.
+	want := realm.Settings{
+		AccessTokenTTL: 90 * time.Second,
+		SessionIdleTTL: 10 * time.Minute,
+		SessionMaxTTL:  time.Hour,
+		PasswordGrant:  true,
+	}
+
+	seed := makeRealm(t, "tuned")
+
+	tuned, err := realm.Rehydrate(
+		seed.ID(), seed.Slug(), seed.DisplayName(), seed.Issuer(),
+		seed.Status(), want, seed.CreatedAt(), seed.UpdatedAt(),
+	)
+	if err != nil {
+		t.Fatalf("rehydrating: %v", err)
+	}
+
+	if err := store.Realms().Create(ctx, tuned); err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	gotPlain, err := store.Realms().FindByID(ctx, plain.ID())
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+
+	if gotPlain.Settings() != realm.DefaultSettings() {
+		t.Errorf("defaults: got %+v", gotPlain.Settings())
+	}
+
+	gotTuned, err := store.Realms().FindByID(ctx, tuned.ID())
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+
+	if gotTuned.Settings() != want {
+		t.Errorf("want %+v, got %+v", want, gotTuned.Settings())
+	}
+
+	wantRow := rawRealm{
+		Issuer: tuned.Issuer(), AccessTokenTTL: 90, SessionIdleTTL: 600, SessionMaxTTL: 3600, PasswordGrant: true,
+	}
+
+	if row := readRawRealm(t, db, tuned.ID()); row != wantRow {
+		t.Errorf("the columns hold whole seconds: want %+v, got %+v", wantRow, row)
+	}
+}
+
+func assertUpdateWritesThePasswordGrantAndNothingElseNew(t *testing.T, db *gorm.DB, store service.Store) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	created := makeRealm(t, "acme")
+	if err := store.Realms().Create(ctx, created); err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	// Moved underneath the aggregate, which still holds the defaults and the
+	// original issuer: an Update that wrote either would put them back.
+	moved := "https://login.acme.com/realms/acme"
+
+	err := db.Exec(
+		"UPDATE realms SET issuer = ?, access_token_ttl = 60, session_idle_ttl = 120, session_max_ttl = 240 WHERE id = ?",
+		moved, created.ID().String(),
+	).Error
+	if err != nil {
+		t.Fatalf("rewriting the row: %v", err)
+	}
+
+	for _, enabled := range []bool{true, false, true} {
+		created.SetPasswordGrant(enabled)
+
+		if err := store.Realms().Update(ctx, created); err != nil {
+			t.Fatalf("updating to %v: %v", enabled, err)
+		}
+
+		want := rawRealm{
+			Issuer: moved, AccessTokenTTL: 60, SessionIdleTTL: 120, SessionMaxTTL: 240, PasswordGrant: enabled,
+		}
+
+		if row := readRawRealm(t, db, created.ID()); row != want {
+			t.Errorf("want %+v, got %+v", want, row)
+		}
+
+		got, err := store.Realms().FindByID(ctx, created.ID())
+		if err != nil {
+			t.Fatalf("reading back: %v", err)
+		}
+
+		if got.Settings().PasswordGrant != enabled {
+			t.Errorf("password grant: want %v, got %v", enabled, got.Settings().PasswordGrant)
+		}
+	}
+}
+
+// A row written by something that predates the four columns: the defaults are
+// the schema's, and they have to agree with the domain's.
+func assertARowWithoutTheSettingsReadsBackWithTheDefaults(t *testing.T, db *gorm.DB, store service.Store) {
+	t.Helper()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	err := db.Exec(
+		"INSERT INTO realms (id, slug, display_name, issuer, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		uuid.Must(uuid.NewV7()).String(), "legacy", "Legacy", "https://idp.example.com/realms/legacy", "active", now, now,
+	).Error
+	if err != nil {
+		t.Fatalf("inserting: %v", err)
+	}
+
+	got, err := store.Realms().FindBySlug(context.Background(), "legacy")
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+
+	if got.Settings() != realm.DefaultSettings() {
+		t.Errorf("want %+v, got %+v", realm.DefaultSettings(), got.Settings())
+	}
+}
+
+func TestRealmSettingsRoundTrip(t *testing.T) {
+	db, store := newStoreAndDB(t)
+
+	assertSettingsRoundTrip(t, db, store)
+}
+
+func TestUpdateWritesThePasswordGrantAndNotTheTTLsOrTheIssuer(t *testing.T) {
+	db, store := newStoreAndDB(t)
+
+	assertUpdateWritesThePasswordGrantAndNothingElseNew(t, db, store)
+}
+
+func TestARealmRowWithoutTheSettingsReadsBackWithTheDefaults(t *testing.T) {
+	db, store := newStoreAndDB(t)
+
+	assertARowWithoutTheSettingsReadsBackWithTheDefaults(t, db, store)
+}
+
+// A value a DBA wrote that the domain would not: read, not silently clamped.
+func TestARealmWithStoredSettingsOutOfRangeIsRefused(t *testing.T) {
+	db, store := newStoreAndDB(t)
+	ctx := context.Background()
+
+	created := makeRealm(t, "acme")
+	if err := store.Realms().Create(ctx, created); err != nil {
+		t.Fatalf("creating: %v", err)
+	}
+
+	// The second is large enough to overflow a time.Duration once in nanoseconds.
+	for _, seconds := range []int64{36001, 1 << 62} {
+		err := db.Exec("UPDATE realms SET session_idle_ttl = ? WHERE id = ?", seconds, created.ID().String()).Error
+		if err != nil {
+			// The schema may refuse it first, which is the same guarantee.
+			continue
+		}
+
+		if _, err := store.Realms().FindByID(ctx, created.ID()); !errors.Is(err, realm.ErrSettingsInvalid) {
+			t.Errorf("%d seconds: want ErrSettingsInvalid, got %v", seconds, err)
+		}
 	}
 }
 

@@ -95,6 +95,26 @@ spec:
                 secretKeyRef:
                   name: aegis-crypto
                   key: master-key
+            # The first administrator, only acted on while the master realm has
+            # none able to sign in. Optional, so a cluster that already has one
+            # defines nothing; a new one creates the Secret out of band, e.g.
+            # kubectl create secret generic aegis-bootstrap-admin \
+            #   --from-literal=email=admin@example.com --from-literal=password=...
+            # The password is temporary and nothing forces the change yet:
+            # replace it with `aegisd identity set-password`, then delete the
+            # Secret.
+            - name: AEGIS_BOOTSTRAP_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: aegis-bootstrap-admin
+                  key: email
+                  optional: true
+            - name: AEGIS_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aegis-bootstrap-admin
+                  key: password
+                  optional: true
             # verify-full authenticates the server as well as encrypting the
             # connection; see docs/configuration.md for the full vocabulary.
             - name: AEGIS_DATABASE_SSL_MODE

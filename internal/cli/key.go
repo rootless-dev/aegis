@@ -92,7 +92,7 @@ func dispatchKeyTransition(
 		return nil, nil, err
 	}
 
-	kid, rest, err := requireArgument(rest, command, "a kid")
+	kid, rest, err := requireKID(rest, command)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -100,6 +100,33 @@ func dispatchKeyTransition(
 	wrapped := func(cfg *configs.Application) int { return run(cfg, slug, kid) }
 
 	return withoutStrayTokens(rest, wrapped, command)
+}
+
+// A kid is a base64url thumbprint, so one key in 64 has a kid that starts with
+// a dash and would be taken for a flag. Its exact shape is what tells it apart.
+func requireKID(args []string, command string) (string, []string, error) {
+	if len(args) > 0 && looksLikeKID(args[0]) {
+		return args[0], args[1:], nil
+	}
+
+	return requireArgument(args, command, "a kid")
+}
+
+func looksLikeKID(raw string) bool {
+	// 43 is SHA-256 in unpadded base64url, the RFC 7638 thumbprint.
+	if len(raw) != 43 {
+		return false
+	}
+
+	for _, c := range raw {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+
+	return true
 }
 
 // A leading dash means the argument is missing and the flags have started.

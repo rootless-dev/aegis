@@ -29,7 +29,14 @@ func applyEnv(cfg *configs.Application) error {
 	applyBanner(cfg.Banner)
 	applyDatabase(cfg.Database)
 
-	return applyCrypto(cfg.Crypto)
+	return errors.Join(applyBootstrap(&cfg.Bootstrap), applyCrypto(cfg.Crypto))
+}
+
+func applyBootstrap(cfg *configs.Bootstrap) error {
+	fromEnv(&cfg.Admin.Email, "AEGIS_BOOTSTRAP_ADMIN_EMAIL")
+	fromEnv(&cfg.Admin.Username, "AEGIS_BOOTSTRAP_ADMIN_USERNAME")
+
+	return secretFromEnv(&cfg.Admin.Password, "AEGIS_BOOTSTRAP_ADMIN_PASSWORD")
 }
 
 func applyCrypto(cfg *configs.Crypto) error {

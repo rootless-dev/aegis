@@ -95,6 +95,7 @@ func serveJWKS(t *testing.T, keys *service.KeyService, of *realm.Realm) []byte {
 	handler := oidc.New(
 		staticResolver{realm: of},
 		keys,
+		nil,
 		func(*http.Request) string { return of.Slug() },
 		&log.Logger{Writer: log.IOWriter{Writer: io.Discard}},
 	)

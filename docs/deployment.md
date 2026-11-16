@@ -171,7 +171,13 @@ failing until the secret is mounted into that init container or pipeline step
 as well. It does not need the key to do its work; it needs it because the
 process it runs in refuses to be misconfigured — and the alternative, a
 migration applied by a binary that could not have booted, is worse than the
-inconvenience.
+inconvenience. `aegisd identity` is under the same rule: creating a user or
+setting a password seals nothing, and still runs only where the master key is
+present. The password it sets comes from `AEGIS_IDENTITY_PASSWORD` or, better
+where a secret can be mounted, from the file `AEGIS_IDENTITY_PASSWORD_FILE`
+names — never from the command line, where it would show in `ps` and in the
+pod's recorded command. `aegisd session`, which lists and revokes sessions, is
+under it too, and so are `aegisd admin` and `aegisd bootstrap-admin`.
 
 ### Backups
 
@@ -205,6 +211,146 @@ where it stopped, and running it after it finished does nothing. Once a run
 finds nothing left to move, drop `AEGIS_CRYPTO_MASTER_KEY_PREVIOUS` and restart. A
 process still holding a previous key says so in a log line on every boot, which
 is what keeps a half-finished rewrap from being forgotten.
+
+## The first administrator
+
+A new installation has nobody who can sign in, and says so on every boot with
+a `WARN`: `no administrator able to sign in exists`. The first administrator is
+created by the boot itself, from an email and a password injected into the
+process. There is no setup page and no token to fetch from a pod.
+
+The base already declares `AEGIS_BOOTSTRAP_ADMIN_EMAIL` and
+`AEGIS_BOOTSTRAP_ADMIN_PASSWORD` as `secretKeyRef`s to the `email` and
+`password` keys of a Secret named `aegis-bootstrap-admin`, both marked
+`optional: true`. A cluster without the Secret therefore starts normally, with
+neither variable set, and what a new installation adds is the Secret itself,
+before the first rollout:
+
+```sh
+kubectl create secret generic aegis-bootstrap-admin \
+  --from-literal=email=admin@example.com \
+  --from-literal=password='a password for one sign-in'
+```
+
+A `secretKeyRef` is resolved when a pod starts, so pods already running do not
+see a Secret created afterwards; restart the rollout. The first replica to boot
+creates the administrator in the `master` realm, with administration of every
+realm, and logs a `WARN` reading `first administrator created with the
+temporary password from the bootstrap configuration`. Replicas starting at the
+same moment settle it through the database and the losers adopt what the
+winner wrote; none of them fails.
+
+Mounting the Secret as a file and pointing `AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE`
+at it is the better form where the manifests are yours to patch, for the
+reasons given for the master key above. Setting both forms fails the boot. The
+password has no configuration file key.
+
+### It is not a way to change a password
+
+The variables are acted on only while the master realm has no administrator
+able to sign in — no active identity there holding a global grant and having a
+password. On every later boot they are ignored, and the process logs an `INFO`:
+`an administrator already exists; the bootstrap credentials were ignored and
+can be removed from the environment`. Editing the Secret and restarting does
+not change the administrator's password, and is not supposed to.
+
+### Replace the password, then remove the Secret
+
+The password is created temporary, because a Secret that seeded it stays in
+etcd, in backups and in whatever repository it was applied from. **This version
+does not force its replacement**: there is no change-password flow yet, so a
+sign-in with the temporary password succeeds. What it does is refuse to let
+the matter be forgotten. Every boot of every replica logs a `WARN` for each
+administrator whose password is still the temporary one, with the email, until
+it is replaced:
+
+```
+this administrator's password is still the temporary one; replace it with `aegisd identity set-password master <email>`, without --temporary
+```
+
+That command is how it is replaced today, run from the image with the database
+variables and the master key the Deployment has, and the new password in
+`AEGIS_IDENTITY_PASSWORD` or the file `AEGIS_IDENTITY_PASSWORD_FILE` names.
+The warning does not depend on the Secret: deleting the Secret without
+replacing the password leaves the warning in place.
+
+Once the password is replaced, delete the Secret:
+
+```sh
+kubectl delete secret aegis-bootstrap-admin
+```
+
+Leaving it is not harmless. The boot acts whenever no administrator is able to
+sign in, so with the Secret still mounted, disabling the only administrator is
+undone by the next pod to start: that identity is made active again with the
+Secret's password if the email is its own, and a second administrator is
+created if it is not. An installation with no bootstrap credentials and no
+administrator only warns.
+
+### Resetting an administrator
+
+An administrator who lost the password, was disabled or lost the grant is
+recovered with `aegisd bootstrap-admin`, run against the same database. It
+reads the same two variables — or `AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE` — and,
+unlike the boot, always acts. The identity holding that email in the `master`
+realm:
+
+- is made active if it was disabled;
+- gets the configured password, marked temporary again, so the warning returns
+  until it is replaced;
+- is given the global grant if it did not hold it;
+- has every live session ended. Whoever knew the old password may still hold
+  one, and a reset that left it working would not be a reset. Access tokens
+  already issued remain valid until they expire, five minutes at most by
+  default.
+
+An email nobody holds creates the administrator instead. The email is what
+selects the account: pointing the command at a different address does not
+reset the existing administrator, it makes another one.
+
+It needs no server running and does not need one to have ever run: it seeds
+the master realm itself when it is missing. It does not migrate, so the schema
+must already be current. Like every subcommand it needs the whole
+configuration to validate, the master key included, and it is a pod in the
+`aegis` namespace like any other, so a Job or a one-off pod running it needs
+the same security context the Deployment has.
+
+It is also the deliberate alternative to the Secret for an installation that
+would rather not have bootstrap credentials in the server's environment at
+all: `aegisd migrate`, then `aegisd bootstrap-admin`, then the replicas.
+
+Who else administers is `aegisd admin grant` and `aegisd admin revoke`. Nothing
+protects the last administrator from being revoked or disabled; this command
+is the way back in.
+
+## The token endpoint
+
+`POST /realms/{realm}/protocol/openid-connect/token` is the first endpoint that
+takes a password from the network, and three things about it are the
+deployment's to handle, because nothing in this version does.
+
+It is not rate limited. Every password attempt costs the process an argon2id
+verification — about 64 MiB of memory while it runs — and nothing bounds how
+many run at once or how many one caller may send. Put the limit in the gateway
+in front of it, per client address, and size the pod's memory for the
+concurrency that limit allows rather than for the idle process.
+
+Sessions and refresh tokens are never deleted. A session that ended or expired
+keeps its row in `sessions`, and every refresh adds a row to `refresh_tokens`,
+so both tables grow with use until a later version purges them. Deleting a
+session row by hand takes its tokens with it through the foreign key.
+
+The client address recorded on each session, and logged when a login or a
+refresh is refused, is the one the forwarding decision attributes the request
+to. Behind a gateway that is not listed in `proxy.trusted_proxies`, that is the
+gateway's own address on every session.
+
+The lifetimes — five minutes for an access token, thirty idle minutes and ten
+hours at most for a session — are columns of the realm and not configuration;
+see [configuration](configuration.md#what-is-not-configurable). Revoking a
+session with `aegisd session revoke` stops its next refresh and leaves the
+access token already issued valid until it expires, so the access token
+lifetime is also how long a revocation takes to be complete.
 
 ## Migrations
 

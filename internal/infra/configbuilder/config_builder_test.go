@@ -597,3 +597,144 @@ func TestEnvReportsBothSecretFormsSet(t *testing.T) {
 		t.Fatal("want an error, got none")
 	}
 }
+
+func TestBootstrapIsNotConfiguredWhenNothingIsSet(t *testing.T) {
+	cfg, err := configbuilder.New().WithDefaults().WithEnv().WithFlags(development()).Normalize().Validate().Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Bootstrap.Admin.Configured() {
+		t.Errorf("want no bootstrap credentials, got %q", cfg.Bootstrap.Admin.Email)
+	}
+}
+
+func TestBootstrapAdminComesFromTheEnvironment(t *testing.T) {
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_USERNAME", "admin")
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_PASSWORD", "from-the-environment")
+
+	cfg, err := configbuilder.New().WithDefaults().WithEnv().WithFlags(development()).Normalize().Validate().Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	admin := cfg.Bootstrap.Admin
+
+	if admin.Email != "admin@example.com" || admin.Username != "admin" || admin.Password != "from-the-environment" {
+		t.Errorf("want the three variables applied, got email=%q username=%q", admin.Email, admin.Username)
+	}
+
+	if !admin.Configured() {
+		t.Error("want the credentials reported as supplied")
+	}
+}
+
+func TestBootstrapAdminPasswordComesFromAMountedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "password")
+
+	// The trailing newline is what `echo` and editors leave behind.
+	if err := os.WriteFile(path, []byte("from-the-file\n"), 0o600); err != nil {
+		t.Fatalf("writing the secret file: %v", err)
+	}
+
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE", path)
+
+	cfg, err := configbuilder.New().WithDefaults().WithEnv().WithFlags(development()).Normalize().Validate().Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Bootstrap.Admin.Password != "from-the-file" {
+		t.Error("want the password read from the file, without the trailing newline")
+	}
+}
+
+func TestBootstrapAdminPasswordRefusesBothForms(t *testing.T) {
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_PASSWORD", "s3cr3t-marker")
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE", "/tmp/whatever")
+
+	_, err := configbuilder.New().WithDefaults().WithEnv().Build()
+	if err == nil {
+		t.Fatal("want an error, got none")
+	}
+
+	if !strings.Contains(err.Error(), "AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE") {
+		t.Errorf("want the error to name the variables, got %q", err)
+	}
+
+	if strings.Contains(err.Error(), "s3cr3t-marker") {
+		t.Errorf("the password must never be in an error, got %q", err)
+	}
+}
+
+func TestBootstrapAdminPasswordFileMustBeReadable(t *testing.T) {
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE", filepath.Join(t.TempDir(), "absent"))
+
+	_, err := configbuilder.New().WithDefaults().WithEnv().Build()
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("want the unreadable file reported, got %v", err)
+	}
+}
+
+func TestBootstrapAdminEnvOverwritesYAML(t *testing.T) {
+	writeConfig(t, `
+bootstrap:
+  admin:
+    email: file@example.com
+    username: from-file
+`)
+
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_EMAIL", "env@example.com")
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_PASSWORD", "from-the-environment")
+
+	cfg, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().WithFlags(development()).Normalize().Validate().Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Bootstrap.Admin.Email != "env@example.com" {
+		t.Errorf("environment should win, got %q", cfg.Bootstrap.Admin.Email)
+	}
+
+	// What the environment does not mention stays as the file left it.
+	if cfg.Bootstrap.Admin.Username != "from-file" {
+		t.Errorf("username should have stayed at the file value, got %q", cfg.Bootstrap.Admin.Username)
+	}
+
+	t.Setenv("AEGIS_BOOTSTRAP_ADMIN_USERNAME", "from-env")
+
+	cfg, err = configbuilder.New().WithDefaults().WithYAML().WithEnv().WithFlags(development()).Normalize().Validate().Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Bootstrap.Admin.Username != "from-env" {
+		t.Errorf("environment should win, got %q", cfg.Bootstrap.Admin.Username)
+	}
+}
+
+// An email in the file is half a credential, and the boot has to say where
+// the other half goes.
+func TestBootstrapAdminInTheFileStillNeedsThePassword(t *testing.T) {
+	writeConfig(t, "bootstrap:\n  admin:\n    email: admin@example.com\n")
+
+	_, err := configbuilder.New().WithDefaults().WithYAML().WithEnv().WithFlags(development()).Normalize().Validate().Build()
+	if err == nil {
+		t.Fatal("want an error, got none")
+	}
+
+	if !strings.Contains(err.Error(), "AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE") {
+		t.Errorf("want the error to name the password variables, got %q", err)
+	}
+}
+
+func TestBootstrapAdminPasswordCannotComeFromTheFile(t *testing.T) {
+	writeConfig(t, "bootstrap:\n  admin:\n    email: admin@example.com\n    password: secret\n")
+
+	_, err := configbuilder.New().WithDefaults().WithYAML().Build()
+	if err == nil {
+		t.Fatal("expected a password in the file to fail the boot")
+	}
+}

@@ -241,6 +241,57 @@ overlay generates the Secret the base reads.
 Every stored row records which key sealed it, so with both set the process
 opens rows under either one and seals new material under the current key.
 
+## Bootstrap
+
+The `bootstrap.admin` section names the first administrator of the `master`
+realm. It is optional, and an installation that already has an administrator
+sets none of it.
+
+```yaml
+bootstrap:
+  admin:
+    email: admin@example.com
+    username: admin   # optional
+```
+
+| Setting | Source |
+| --- | --- |
+| the email, which identifies the administrator | `bootstrap.admin.email` or `AEGIS_BOOTSTRAP_ADMIN_EMAIL` |
+| an optional username, a second name to sign in with | `bootstrap.admin.username` or `AEGIS_BOOTSTRAP_ADMIN_USERNAME` |
+| the password | `AEGIS_BOOTSTRAP_ADMIN_PASSWORD`, or `AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE` naming a file that holds it |
+
+**The password cannot be set in YAML.** `bootstrap.admin.password` does not
+exist as a key, so writing it fails the boot as any unknown key does — the rule
+the database password and the master key follow, for their reason. The `_FILE`
+form is the better of the two where a secret can be mounted, and setting both
+fails the boot.
+
+The values are acted on only while the master realm has no administrator able
+to sign in: no active identity there that holds a global grant and has a
+password. Then the boot creates the identity, gives it that password marked
+temporary, and grants it administration of every realm. **In every other case
+they are ignored, even when they differ from what is stored** — this is not a
+way to change a password, and the log says at `INFO` that they were ignored and
+can be removed. `aegisd bootstrap-admin` is the reset; see
+[Architecture](architecture.md#administrators) for why the two are separate.
+
+What validation checks is shape, at every boot and for every subcommand,
+whether or not the values end up being used:
+
+- with none of the three set, the section is absent and nothing is checked;
+- once any of them is set, the email and the password are both required. An
+  email in the file with no password in the environment fails the boot, which
+  is why `aegis.example.yaml` ships the section commented out;
+- the email is at most 254 bytes, has one `@` with something on each side, and
+  no whitespace;
+- the username, when given, is at most 64 bytes and contains no `@` and no
+  whitespace;
+- the password is at most 1024 bytes, the limit of any password here.
+
+There is no strength rule on the password, on purpose. It is created marked for
+replacement, and refusing a weak one would leave the installation with no
+administrator at all. The password never appears in a validation message.
+
 ## Validation
 
 Everything is validated before anything starts, and **every problem is reported
@@ -318,6 +369,9 @@ both sources, because accepting it would silently mean nanoseconds.
 | `database.migrate.lock_timeout` | `AEGIS_DATABASE_MIGRATE_LOCK_TIMEOUT` | `0s`, which means golang-migrate's own default of 15s, not "no limit" |
 | — | `AEGIS_CRYPTO_MASTER_KEY` (or `AEGIS_CRYPTO_MASTER_KEY_FILE`) | none, required in every profile |
 | — | `AEGIS_CRYPTO_MASTER_KEY_PREVIOUS` (or `AEGIS_CRYPTO_MASTER_KEY_PREVIOUS_FILE`) | empty |
+| `bootstrap.admin.email` | `AEGIS_BOOTSTRAP_ADMIN_EMAIL` | empty |
+| `bootstrap.admin.username` | `AEGIS_BOOTSTRAP_ADMIN_USERNAME` | empty |
+| — | `AEGIS_BOOTSTRAP_ADMIN_PASSWORD` (or `AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE`) | empty, required once an email or a username is set |
 | `graceful.timeout` | `AEGIS_GRACEFUL_SHUTDOWN_TIMEOUT` | `20s` |
 | `health.check_timeout` | `AEGIS_HEALTH_CHECK_TIMEOUT` | `2s` |
 | `health.drain_delay` | `AEGIS_HEALTH_DRAIN_DELAY` | `5s` |
@@ -336,9 +390,38 @@ to trust the one message an attacker on the path could have written.
 An empty environment variable counts as absent, so a default cannot be cleared
 by exporting the variable empty.
 
+One pair of variables is read outside this table, because it is not
+configuration: `AEGIS_IDENTITY_PASSWORD`, or `AEGIS_IDENTITY_PASSWORD_FILE`
+naming a file that holds it, is the password `aegisd identity create` and
+`aegisd identity set-password` give an identity. The server never reads it. It
+follows the rule of every other secret here — no configuration file key, no
+command line flag, and both forms set is an error — and belongs in the
+environment of that one invocation rather than in `.env`, where it would
+outlive the command it was meant for.
+
 ## What is not configurable
 
 Version, revision and build time. They identify the binary and are stamped into
 it at build time, reported by `internal/buildinfo`. A version the environment
 could override is a version that may disagree with the code actually running,
 and that is when the information stops being useful.
+
+The password hashing parameters. argon2id runs at 64 MiB, 3 passes and
+parallelism 4, fixed in `internal/infra/passhash`. Every stored hash records
+the parameters it was produced with, so raising them is a release that
+re-hashes each password at its next successful login, not a setting; a key
+here would only add the ability to run weaker ones.
+
+Token and session lifetimes, and whether a realm accepts the password grant.
+They belong to a realm, not to the installation, and live in the `realms`
+table as `access_token_ttl`, `session_idle_ttl`, `session_max_ttl` and
+`password_grant` — 5 minutes, 30 minutes, 10 hours, and off everywhere but
+`master`. A configuration key would have been one value for every tenant of a
+multi-tenant service, and a second source able to disagree with the row.
+Nothing changes them yet: no subcommand or endpoint writes those columns, so
+every realm runs on the defaults until the administration API exists. There is
+no refresh token lifetime to set either; a refresh token lives until its
+session's idle deadline.
+
+The signing algorithm of access tokens. It is RS256, with the realm's active
+key.

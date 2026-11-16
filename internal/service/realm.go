@@ -9,14 +9,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rootless-dev/aegis/internal/domain/realm"
+	"github.com/rootless-dev/aegis/internal/domain/session"
 )
 
 const (
 	masterSlug        = "master"
 	masterDisplayName = "Master"
 
-	defaultRealmPageSize = 50
-	maxRealmPageSize     = 500
+	defaultPageSize = 50
+	maxPageSize     = 500
 )
 
 // ErrLimitNotPositive reports a page size no repository will guess at. It lives
@@ -49,8 +50,9 @@ type RealmRepository interface {
 	// inventing a page size; RealmService.List is what supplies a default.
 	List(ctx context.Context, q RealmQuery) ([]*realm.Realm, error)
 
-	// Writes display_name, status and updated_at, and no other column. A write
-	// that matched no row returns realm.ErrNotFound, never nil.
+	// Writes display_name, status, password_grant and updated_at, and no other
+	// column: not the issuer, not the TTLs. A write that matched no row returns
+	// realm.ErrNotFound, never nil.
 	Update(ctx context.Context, r *realm.Realm) error
 
 	// Separate from Update because the issuer is immutable by design.
@@ -82,16 +84,22 @@ func (s *RealmService) Create(ctx context.Context, slug, displayName string) (*r
 		return nil, fmt.Errorf("%w: %q", realm.ErrSlugReserved, slug)
 	}
 
-	return s.create(ctx, slug, displayName)
+	return s.create(ctx, slug, displayName, false)
 }
 
 // create writes the realm and its signing keys in one transaction, so a realm
 // that cannot sign is never observable. The keys are generated before the
 // transaction opens: none may be held across an RSA-2048 generation.
-func (s *RealmService) create(ctx context.Context, slug, displayName string) (*realm.Realm, error) {
+func (s *RealmService) create(
+	ctx context.Context, slug, displayName string, passwordGrant bool,
+) (*realm.Realm, error) {
 	created, err := realm.New(slug, displayName, s.publicBaseURL)
 	if err != nil {
 		return nil, err
+	}
+
+	if passwordGrant {
+		created.SetPasswordGrant(true)
 	}
 
 	prepared, err := s.keys.Prepare(created.ID())
@@ -142,11 +150,11 @@ func (s *RealmService) Resolve(ctx context.Context, slug string) (*realm.Realm, 
 // Clamps rather than rejects: a page size is not worth failing a call over.
 func (s *RealmService) List(ctx context.Context, q RealmQuery) ([]*realm.Realm, error) {
 	if q.Limit <= 0 {
-		q.Limit = defaultRealmPageSize
+		q.Limit = defaultPageSize
 	}
 
-	if q.Limit > maxRealmPageSize {
-		q.Limit = maxRealmPageSize
+	if q.Limit > maxPageSize {
+		q.Limit = maxPageSize
 	}
 
 	if len(q.Status) == 0 {
@@ -160,8 +168,31 @@ func (s *RealmService) Rename(ctx context.Context, id uuid.UUID, displayName str
 	return s.mutate(ctx, id, func(r *realm.Realm) error { return r.Rename(displayName) })
 }
 
+// SetStatus ends every live session of a realm that leaves active, in the same
+// transaction. Activating it again does not bring them back.
 func (s *RealmService) SetStatus(ctx context.Context, id uuid.UUID, status realm.Status) error {
-	return s.mutate(ctx, id, func(r *realm.Realm) error { return r.SetStatus(status) })
+	return s.store.InTx(ctx, func(tx Store) error {
+		found, err := tx.Realms().FindByID(ctx, id)
+		if err != nil {
+			return err
+		}
+
+		if err := found.SetStatus(status); err != nil {
+			return err
+		}
+
+		if err := tx.Realms().Update(ctx, found); err != nil {
+			return err
+		}
+
+		if status == realm.StatusActive {
+			return nil
+		}
+
+		_, err = tx.Sessions().EndAllByRealm(ctx, id, found.UpdatedAt(), session.EndRealmDisabled)
+
+		return err
+	})
 }
 
 // Nothing hard-deletes a realm: the row keeps occupying its slug and issuer,
@@ -201,7 +232,8 @@ func (s *RealmService) EnsureMaster(ctx context.Context, development bool) (*rea
 }
 
 // ensureMasterRealm is the boot seed, and the only caller past the reserved slug
-// rule. It touches the issuer and nothing else.
+// rule. On a master realm that already exists it touches the issuer and nothing
+// else: an operator who turned the password grant off did so on purpose.
 //
 // A divergent issuer refuses the boot in production; development rewrites it,
 // because the public url comes from the listener there and changing the port
@@ -210,7 +242,9 @@ func (s *RealmService) ensureMasterRealm(ctx context.Context, development bool) 
 	found, err := s.store.Realms().FindBySlug(ctx, masterSlug)
 
 	if errors.Is(err, realm.ErrNotFound) {
-		created, createErr := s.create(ctx, masterSlug, masterDisplayName)
+		// Born with the password grant on: the migration that enables it only
+		// reaches installations that already had the row.
+		created, createErr := s.create(ctx, masterSlug, masterDisplayName, true)
 
 		// Another replica seeded between the lookup and this insert: migration
 		// holds a session lock, the seed does not. Both unique constraints fire

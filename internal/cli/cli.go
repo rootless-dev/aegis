@@ -34,6 +34,22 @@ func Dispatch(args []string) (handled bool, remaining []string, run Runner, usag
 		remaining, run, usageErr := dispatchKey(args[1:])
 
 		return true, remaining, run, usageErr
+	case "identity":
+		remaining, run, usageErr := dispatchIdentity(args[1:])
+
+		return true, remaining, run, usageErr
+	case "session":
+		remaining, run, usageErr := dispatchSession(args[1:])
+
+		return true, remaining, run, usageErr
+	case "admin":
+		remaining, run, usageErr := dispatchAdmin(args[1:])
+
+		return true, remaining, run, usageErr
+	case "bootstrap-admin":
+		remaining, run, usageErr := withoutStrayTokens(args[1:], runBootstrapAdmin, bootstrapAdmin)
+
+		return true, remaining, run, usageErr
 	default:
 		return true, nil, nil, fmt.Errorf("aegisd: unknown command %q\n\n%s", args[0], usage)
 	}
@@ -50,6 +66,31 @@ const usage = `Usage:
   aegisd key disable <realm> <kid> [flags]   take a passive key out of the JWKS
   aegisd key enable <realm> <kid> [flags]    put a disabled key back as passive
   aegisd key rewrap [flags]                  reseal every key under the current master key
+
+  aegisd identity create <realm> <email> [username] [--temporary] [flags]   create an identity
+  aegisd identity set-password <realm> <login> [--temporary] [flags]        set or replace the password
+  aegisd identity list <realm> [flags]                                      list a realm's identities
+  aegisd identity disable <realm> <login> [flags]                           refuse authentication for the identity
+  aegisd identity enable <realm> <login> [flags]                            allow it again
+
+  aegisd session list <realm> <login> [flags]          list an identity's sessions, newest first
+  aegisd session revoke <realm> <session-id> [flags]   end one session
+  aegisd session revoke-all <realm> <login> [flags]    end every live session of an identity
+
+  aegisd bootstrap-admin [flags]   create the administrator named in the bootstrap configuration, or reset its password
+
+  aegisd admin list [flags]                     list who administers what
+  aegisd admin grant <login> [realm] [flags]    grant administration of everything, or of one realm
+  aegisd admin revoke <login> [realm] [flags]   take it back
+
+A login is an email or a username. A password is never an argument: it is read
+from AEGIS_IDENTITY_PASSWORD, or from the file AEGIS_IDENTITY_PASSWORD_FILE names.
+Without one, create leaves the identity with no password. --temporary makes the
+password as one to be replaced; nothing forces the change yet.
+
+bootstrap-admin reads AEGIS_BOOTSTRAP_ADMIN_EMAIL and AEGIS_BOOTSTRAP_ADMIN_PASSWORD
+(or AEGIS_BOOTSTRAP_ADMIN_PASSWORD_FILE), like the server. The admin verbs take a
+login of the master realm, the only one whose identities administer.
 
 The subcommand must come first; flags follow it.
 `

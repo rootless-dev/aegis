@@ -7,9 +7,26 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/rootless-dev/aegis/internal/domain/admin"
+	"github.com/rootless-dev/aegis/internal/domain/credential"
+	"github.com/rootless-dev/aegis/internal/domain/identity"
 	"github.com/rootless-dev/aegis/internal/domain/key"
 	"github.com/rootless-dev/aegis/internal/domain/realm"
+	"github.com/rootless-dev/aegis/internal/domain/session"
 )
+
+// Driver text captured from MySQL 8.0: the duplicate value is quoted ahead of
+// the key, and this username is one the domain accepts.
+func TestTranslateReadsTheKeyAndNotTheDuplicateValue(t *testing.T) {
+	original := errors.New(
+		"Error 1062 (23000): Duplicate entry '01a1cb3b-a3c1-7d84-9dff-1d4eaf10d8bb-uq_identities_email' " +
+			"for key 'identities.uq_identities_username'",
+	)
+
+	if got := translate(original, identity.ErrNotFound); !errors.Is(got, identity.ErrUsernameTaken) {
+		t.Errorf("want identity.ErrUsernameTaken, got %v", got)
+	}
+}
 
 // SQLite names the same column on a NOT NULL violation as on a UNIQUE one, so
 // matching the column alone would report "already in use" for a write that is
@@ -33,6 +50,42 @@ func TestTranslateOnlyReadsAUniqueViolationAsATakenValue(t *testing.T) {
 			key.ErrKIDTaken,
 		},
 		"a check violation on the marker": {"CHECK constraint failed: ck_realm_keys_marker", nil},
+
+		"a unique violation on the email": {
+			"UNIQUE constraint failed: identities.realm_id, identities.email",
+			identity.ErrEmailTaken,
+		},
+		"a unique violation on the username": {
+			"UNIQUE constraint failed: identities.realm_id, identities.username",
+			identity.ErrUsernameTaken,
+		},
+		"a not null violation on the email": {"NOT NULL constraint failed: identities.email", nil},
+		"a unique violation on the credential type": {
+			"UNIQUE constraint failed: credentials.identity_id, credentials.type",
+			credential.ErrExists,
+		},
+		"a not null violation on the credential type": {"NOT NULL constraint failed: credentials.type", nil},
+
+		"a unique violation on the token hash": {
+			"UNIQUE constraint failed: refresh_tokens.token_hash",
+			session.ErrHashInvalid,
+		},
+		"a not null violation on the token hash": {"NOT NULL constraint failed: refresh_tokens.token_hash", nil},
+		"a unique violation on the token id":     {"UNIQUE constraint failed: refresh_tokens.id", nil},
+
+		"a unique violation on the global marker": {
+			"UNIQUE constraint failed: admin_grants.identity_id, admin_grants.global_marker",
+			admin.ErrExists,
+		},
+		"a unique violation on the target realm": {
+			"UNIQUE constraint failed: admin_grants.identity_id, admin_grants.target_realm_id",
+			admin.ErrExists,
+		},
+		"a unique violation on the grant id":   {"UNIQUE constraint failed: admin_grants.id", nil},
+		"a check violation on the grant scope": {"CHECK constraint failed: ck_admin_grants_scope", nil},
+		"a not null violation on the grant identity": {
+			"NOT NULL constraint failed: admin_grants.identity_id", nil,
+		},
 	}
 
 	for name, tc := range tests {
